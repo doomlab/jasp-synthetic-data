@@ -11,7 +11,7 @@ Description
 	maintainer	: "JASP Team <info@jasp-stats.org>"
 	website		: "https://jasp-stats.org"
 	license		: "GPL (>= 2)"
-	icon        : "exampleIcon.png" // Located in /inst/icons/
+	icon        : "jsdIcon.png" // Located in /inst/icons/
 	preloadData: true
 	requiresData: true
 
@@ -70,5 +70,19 @@ Description
 	  func: "parabola"
 	  qml: "Parabola.qml"
 	  requiresData: false
+	}
+
+	GroupTitle
+	{
+	  title: qsTr("Synthetic Data")
+	}
+
+	Analysis
+	{
+	  title: qsTr("Synthetic Data")
+	  menu: qsTr("Synthetic Data")
+	  func: "syntheticData"        // Must match the R function name
+	  qml: "SyntheticData.qml"     // The UI file for the analysis
+	  requiresData: true
 	}
 }
