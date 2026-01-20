@@ -1,45 +1,42 @@
-import QtQuick 2.12
-import QtQuick.Layouts 1.12
-import JASP 1.0
+import QtQuick 
+import QtQuick.Layouts
+import JASP
+import JASP.Controls
 
 Form {
     title: qsTr("Synthetic Data")
+    info: qsTr("Configure variables and options to generate a synthetic dataset.")
 
-    Analysis {
-        id: analysis
-        // Must match the R entrypoint function name
-        name: "syntheticData"
-        title: qsTr("Synthetic Data")
-    }
+    VariablesForm {
+        AvailableVariablesList { name: "allVariables" }
 
-    Section {
-        title: qsTr("Variables")
-        VariablesList {
-            id: vars
-            name: "variables"        // -> options$variables in R
-            title: qsTr("Select variables")
-            // Keep simple: allow any column types. (If you want to constrain, we can add that later.)
+        AssignedVariablesList {
+            name: "variables"    // -> options$variables in R
+            label: qsTr("Variables")
+            info: qsTr("Columns copied here will be simulated.")
         }
     }
 
     Section {
-        title: qsTr("Generation options")
+        title: qsTr("Options")
         ColumnLayout {
             spacing: 8
 
             IntegerField {
                 name: "n"            // -> options$n
-                title: qsTr("Rows to synthesize (n)")
+                label: qsTr("Number of rows")
                 defaultValue: 0      // 0 = same as original n (handled in R)
                 min: 0
                 info: qsTr("Set 0 to match the size of the input data.")
             }
 
             IntegerField {
+                id: seedField
                 name: "seed"         // -> options$seed
-                title: qsTr("Random seed")
-                defaultValue: 123
+                label: qsTr("Random seed")
+                defaultValue: Math.floor(Math.random() * 1000000)
                 min: 0
+                info: qsTr("Change this number to control reproducibility.")
             }
         }
     }

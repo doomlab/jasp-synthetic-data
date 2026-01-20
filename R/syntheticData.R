@@ -1,130 +1,98 @@
-
-
-#' Synthetic Data generation using faux
+#' Synthetic data from categorical variables
 #'
-#' This analysis generates a synthetic dataset from the selected variables
-#' of the active JASP dataset using the {faux} package. Numeric variables
-#' are simulated via a multivariate normal with empirical mean/SD/correlation
-#' estimated from the data; categorical variables are resampled from their
-#' observed marginal distributions.
+#' This analysis inspects the selected variables of the active JASP dataset,
+#' reports whether each column is treated as continuous or categorical, and
+#' (in this simplified phase) generates synthetic data for categorical columns
+#' by resampling observed rows with replacement. The row-level resampling
+#' preserves the empirical joint distribution of the original data.
 #'
 #' Expected options (from QML):
 #' - variables: character vector of column names to use
-#' - n: integer synthetic sample size (defaults to nrow of input)
-#' - seed: integer RNG seed
+#' - n: desired number of synthetic rows (0 means match input n)
+#' - seed: RNG seed for reproducibility
 #'
-#' Returns a JASP results object with a preview table, or a data.frame if
+#' Returns a JASP results object with tables for types and preview, or a data.frame if
 #' jaspBase is not available (for headless testing).
-#'
-#' @importFrom stats cor sd
-#' @importFrom utils head
 #' @keywords internal
+#' @export
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-syntheticData <- function(dataset, options, state, ...) {
+syntheticData <- function(jaspResults, dataset, options, state, ...) {
+  requestedCols <- options$variables
+  if (is.list(requestedCols))
+    requestedCols <- unlist(requestedCols, use.names = FALSE)
+  if (is.null(requestedCols))
+    requestedCols <- character(0)
+  requestedCols <- trimws(requestedCols)
+  requestedCols <- requestedCols[nzchar(requestedCols)]
+
   # --- 1) Get data -----------------------------------------------------------
   if (missing(dataset) || is.null(dataset)) {
     if (requireNamespace("jaspBase", quietly = TRUE)) {
       # read only the needed columns if specified
-      cols <- try(options$variables, silent = TRUE)
-      dataset <- jaspBase::.readDataSetToEnd(columns = if (!inherits(cols, "try-error")) cols else NULL)
+      cols <- try(requestedCols, silent = TRUE)
+      dataset <- jaspBase::readDatasetToEnd(columns = if (!inherits(cols, "try-error") && length(cols) > 0) cols else NULL)
     } else {
       stop("Dataset not provided and jaspBase not available.")
     }
   }
 
-  cols <- options$variables %||% names(dataset)
+  cols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
+  cols <- intersect(cols, names(dataset))
   dat  <- dataset[, cols, drop = FALSE]
 
-  set.seed(options$seed %||% 123)
-  n_out <- as.integer(options$n %||% nrow(dat))
-
-  # --- 2) Split numeric / categorical --------------------------------------
-  isNum <- vapply(dat, is.numeric, TRUE)
-  num   <- dat[, isNum, drop = FALSE]
-
-  # --- 3) Generate numeric columns with faux::rnorm_multi -------------------
-  syn_num <- NULL
-  if (ncol(num) > 0) {
-    if (!requireNamespace("faux", quietly = TRUE)) {
-      stop("The 'faux' package is required. Please add it to your module's DESCRIPTION and install it.")
-    }
-
-    mu <- vapply(num, function(x) mean(x, na.rm = TRUE), numeric(1))
-    sd <- vapply(num, function(x) stats::sd(x, na.rm = TRUE), numeric(1))
-
-    # Handle the 1-column case where cor() returns length-1
-    if (ncol(num) == 1L) {
-      R <- matrix(1, nrow = 1, ncol = 1, dimnames = list(colnames(num), colnames(num)))
-    } else {
-      R <- stats::cor(num, use = "pairwise.complete.obs")
-      # ensure positive-definiteness fallback: replace NA/NaN with 0 and diag=1
-      R[is.na(R)] <- 0
-      diag(R) <- 1
-    }
-
-    syn_num <- faux::rnorm_multi(
-      n         = n_out,
-      mu        = mu,
-      sd        = sd,
-      r         = R,
-      varnames  = colnames(num),
-      empirical = TRUE
+  # --- 2) Classify variables -------------------------------------------------
+  if (ncol(dat) == 0L) {
+    typeInfo <- data.frame(variable = character(), type = character(), stringsAsFactors = FALSE)
+  } else {
+    isNum <- vapply(dat, is.numeric, FUN.VALUE = logical(1))
+    typeInfo <- data.frame(
+      variable = names(dat),
+      type     = ifelse(isNum, "Continuous", "Categorical"),
+      stringsAsFactors = FALSE
     )
-
-    syn_num <- as.data.frame(syn_num)
   }
 
-  # --- 4) Generate categorical columns by resampling marginals --------------
-  syn <- if (!is.null(syn_num)) syn_num else data.frame(row = seq_len(n_out))
-  catCols <- names(dat)[!isNum]
-  if (length(catCols)) {
-    for (cn in catCols) {
-      x  <- dat[[cn]]
-      # keep original levels order if factor/character
-      lv <- if (is.factor(x)) levels(x) else unique(as.character(x))
-      tab <- table(as.character(x), useNA = "no")
-      p   <- as.numeric(tab) / sum(tab)
-      lv_tab <- names(tab)
-      sampled <- sample(lv_tab, size = n_out, replace = TRUE, prob = p)
-      # cast back to factor with original levels if possible
-      if (!is.null(lv)) {
-        syn[[cn]] <- factor(sampled, levels = lv)
-      } else {
-        syn[[cn]] <- sampled
-      }
-    }
-  }
+  # --- 3) Generate categorical synthetic data -------------------------------
+  if (nrow(dat) == 0L) {
+    syn <- dat[0, , drop = FALSE]
+  } else {
+    set.seed(options$seed %||% 123)
+    n_target <- options$n %||% options$nRows %||% nrow(dat)
+    n_target <- suppressWarnings(as.integer(n_target))
+    if (is.na(n_target) || n_target <= 0)
+      n_target <- nrow(dat)
 
-  # Remove helper column if we created it
-  if ("row" %in% names(syn) && !"row" %in% names(dat)) syn$row <- NULL
+    draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
+    syn <- dat[draw_idx, , drop = FALSE]
+  }
 
   # --- 5) Return results / preview -----------------------------------------
   if (requireNamespace("jaspBase", quietly = TRUE)) {
-    results <- jaspBase::createJaspResults()
+    preview <- jaspBase::createJaspTable(title = "Variable Types")
+    preview$addColumnInfo(name = "variable", title = "Variable", type = "string")
+    preview$addColumnInfo(name = "type", title = "Type", type = "string")
+    preview$setData(typeInfo)
+    jaspResults[["variableTypes"]] <- preview
+    jaspResults[["syntheticTypes"]] <- typeInfo
 
-    preview <- jaspBase::createJaspTable(title = "Synthetic Data Preview (first 10 rows)")
-    # Dynamically add column metadata
+    synPreview <- jaspBase::createJaspTable(title = "Synthetic Data Preview (first 10 rows)")
     if (ncol(syn) == 0L) {
-      preview$addColumnInfo(name = "info", title = "Info", type = "string")
-      preview$setData(data.frame(info = "No columns generated."))
+      synPreview$addColumnInfo(name = "info", title = "Info", type = "string")
+      synPreview$setData(data.frame(info = "No columns selected."))
     } else {
       for (nm in names(syn)) {
-        # use 'string' for simplicity; JASP will render fine for numeric too
-        preview$addColumnInfo(name = nm, title = nm, type = "string")
+        synPreview$addColumnInfo(name = nm, title = nm, type = "string")
       }
       headRows <- utils::head(syn, 10)
-      # Convert factors to characters for table rendering
       headRows[] <- lapply(headRows, function(x) if (is.factor(x)) as.character(x) else x)
-      preview$setData(headRows)
+      synPreview$setData(headRows)
     }
+    jaspResults[["syntheticPreview"]] <- synPreview
+    jaspResults[["synthetic"]] <- syn
 
-    results$add(preview)
-    # store the full synthetic data in results state for later use (plots, downloads)
-    results$set("synthetic", syn)
-
-    return(results)
+    return(invisible())
   }
 
   # Fallback: return the data.frame directly (useful for testing outside JASP)
