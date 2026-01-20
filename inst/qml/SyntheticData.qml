@@ -50,12 +50,12 @@ Form {
             spacing: 8
 
             Text {
-                text: downloadUrl !== "" ? qsTr("Click the button to download the latest synthetic dataset.") : qsTr("Run the analysis to enable download.")
+                text: downloadUrl !== "" ? qsTr("Click the button to download the latest synthetic dataset.") : qsTr("Run the analysis to grab a CSV.")
             }
 
             Button {
-                text: qsTr("Download synthetic data")
-                enabled: downloadUrl !== ""
+                id: downloadButton
+                text: qsTr("Download synthetic data (test)")
                 onClicked: {
                     if (downloadUrl !== "") {
                         Qt.openUrlExternally(downloadUrl)
