@@ -12,7 +12,8 @@ Encoding: UTF-8
 Imports:
   jaspBase,
   jaspGraphs,
-  faux
+  faux,
+  base64enc
 Suggests:
   testthat
 Remotes:

@@ -30,3 +30,7 @@ Once your module is accepted, a new repo is created in the JASP organization and
 
 ## Reference
 [Adding your own modules to JASP](https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-adding-module.md)
+
+## Installation
+
+R CMD INSTALL . --preclean --no-multiarch --with-keep.source jaspSyntheticData

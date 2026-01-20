@@ -14,6 +14,7 @@
 #' Returns a JASP results object with tables for types and preview, or a data.frame if
 #' jaspBase is not available (for headless testing).
 #' @keywords internal
+#' @importFrom base64enc base64encode
 #' @export
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
@@ -90,7 +91,36 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
       synPreview$setData(headRows)
     }
     jaspResults[["syntheticPreview"]] <- synPreview
-    jaspResults[["synthetic"]] <- syn
+    synResults <- syn
+    createSynDataset <- if (exists("createJaspDataset", envir = asNamespace("jaspBase"), inherits = FALSE)) {
+      jaspBase:::createJaspDataset
+    } else {
+      NULL
+    }
+    if (!is.null(createSynDataset)) {
+      synDataset <- createSynDataset(title = "Synthetic Dataset", data = synResults)
+      jaspResults[["syntheticData"]] <- synDataset
+    }
+    downloadUrl <- ""
+    if (nrow(synResults) > 0L) {
+      csvLines <- capture.output(write.table(synResults, sep = ",", row.names = FALSE, col.names = TRUE, quote = TRUE))
+      csvText <- paste(csvLines, collapse = "\n")
+      csvBase64 <- base64enc::base64encode(charToRaw(csvText))
+      downloadUrl <- sprintf("data:text/csv;base64,%s", csvBase64)
+      downloadHtml <- sprintf('<a href="%s" download="synthetic-data.csv" target="_blank" rel="noopener">%s</a>',
+                              downloadUrl,
+                              "Download full synthetic dataset (CSV)")
+    } else {
+      downloadHtml <- "No synthetic rows to download."
+    }
+    if (missing(state) || is.null(state) || !is.environment(state)) {
+      state <- new.env(parent = emptyenv())
+    }
+    state$downloadUrl <- downloadUrl
+    downloadBlock <- jaspBase::createJaspHtml(title = "Download",
+                                              text = downloadHtml)
+    jaspResults[["syntheticDownload"]] <- downloadBlock
+    jaspResults[["synthetic"]] <- synResults
 
     return(invisible())
   }

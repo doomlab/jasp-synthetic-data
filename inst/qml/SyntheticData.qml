@@ -1,11 +1,14 @@
 import QtQuick 
 import QtQuick.Layouts
+import QtQuick.Controls
 import JASP
 import JASP.Controls
 
 Form {
     title: qsTr("Synthetic Data")
     info: qsTr("Configure variables and options to generate a synthetic dataset.")
+
+    property string downloadUrl: (typeof analysisState !== "undefined" && analysisState.downloadUrl) ? analysisState.downloadUrl : ""
 
     VariablesForm {
         AvailableVariablesList { name: "allVariables" }
@@ -37,6 +40,27 @@ Form {
                 defaultValue: Math.floor(Math.random() * 1000000)
                 min: 0
                 info: qsTr("Change this number to control reproducibility.")
+            }
+        }
+    }
+
+    Section {
+        title: qsTr("Download")
+        ColumnLayout {
+            spacing: 8
+
+            Text {
+                text: downloadUrl !== "" ? qsTr("Click the button to download the latest synthetic dataset.") : qsTr("Run the analysis to enable download.")
+            }
+
+            Button {
+                text: qsTr("Download synthetic data")
+                enabled: downloadUrl !== ""
+                onClicked: {
+                    if (downloadUrl !== "") {
+                        Qt.openUrlExternally(downloadUrl)
+                    }
+                }
             }
         }
     }
