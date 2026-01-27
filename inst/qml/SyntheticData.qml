@@ -40,6 +40,15 @@ Form {
                 min: 0
                 info: qsTr("Change this number to control reproducibility.")
             }
+
+            DoubleField {
+                name: "jitterFraction"     // -> options$jitterFraction
+                label: qsTr("Jitter fraction")
+                defaultValue: 0.05
+                min: 0
+                max: 1
+                info: qsTr("Controls the size of jitter applied to numeric columns after resampling rows. Zero means no jitter.")
+            }
         }
     }
 

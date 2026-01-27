@@ -58,7 +58,7 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     )
   }
 
-  # --- 3) Generate categorical synthetic data -------------------------------
+  # --- 3) Generate synthetic data for each column via jittered resampling ---
   if (nrow(dat) == 0L) {
     syn <- dat[0, , drop = FALSE]
   } else {
@@ -70,6 +70,22 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
     draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
     syn <- dat[draw_idx, , drop = FALSE]
+    jitterFraction <- options$jitterFraction %||% 0
+    jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
+    if (is.na(jitterFraction) || jitterFraction < 0)
+      jitterFraction <- 0
+    numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
+    if (jitterFraction > 0 && length(numericCols) > 0) {
+      colSd <- vapply(dat[, numericCols, drop = FALSE], function(x) stats::sd(x, na.rm = TRUE), numeric(1))
+      colSd[is.na(colSd)] <- 0
+      for (col in numericCols) {
+        sd_val <- colSd[col]
+        if (is.na(sd_val) || sd_val <= 0)
+          next
+        noise <- stats::rnorm(n = n_target, mean = 0, sd = jitterFraction * sd_val)
+        syn[[col]] <- syn[[col]] + noise
+      }
+    }
   }
 
   # --- 5) Return results / preview -----------------------------------------
