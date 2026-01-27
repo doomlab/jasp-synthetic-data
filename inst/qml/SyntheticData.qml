@@ -9,6 +9,8 @@ Form {
     info: qsTr("Configure variables and options to generate a synthetic dataset.")
 
     property string downloadUrl: (typeof analysisState !== "undefined" && analysisState.downloadUrl) ? analysisState.downloadUrl : ""
+	property string lastSavePath: (typeof analysisState !== "undefined" && analysisState.lastSavePath) ? analysisState.lastSavePath : ""
+
 
     VariablesForm {
         AvailableVariablesList { name: "allVariables" }
@@ -52,7 +54,17 @@ Form {
             Text {
                 text: downloadUrl !== "" ? qsTr("Click the button to download the latest synthetic dataset.") : qsTr("Run the analysis to grab a CSV.")
             }
-
+			FileSelector {
+                id: saveSelector
+                name: "savePath"            // -> options$savePath in R
+                label: qsTr("Save as…")
+                placeholderText: qsTr("synthetic-data.csv")
+                filter: "*.csv"
+                save: true
+                value: lastSavePath
+                Layout.fillWidth: true
+                info: qsTr("Select where the synthetic dataset should be written.")
+            }
             Button {
                 id: downloadButton
                 text: qsTr("Download synthetic data (test)")

@@ -102,6 +102,8 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
       jaspResults[["syntheticData"]] <- synDataset
     }
     downloadUrl <- ""
+    savePath <- ""
+    savePathInput <- trimws(options$savePath %||% "")
     if (nrow(synResults) > 0L) {
       csvLines <- capture.output(write.table(synResults, sep = ",", row.names = FALSE, col.names = TRUE, quote = TRUE))
       csvText <- paste(csvLines, collapse = "\n")
@@ -113,14 +115,27 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     } else {
       downloadHtml <- "No synthetic rows to download."
     }
+    if (nzchar(savePathInput)) {
+      savePath <- sub("^file:///?", "", savePathInput)
+      targetDir <- dirname(savePath)
+      if (targetDir != "" && !dir.exists(targetDir)) {
+        dir.create(targetDir, recursive = TRUE, showWarnings = FALSE)
+      }
+      utils::write.csv(synResults, file = savePath, row.names = FALSE)
+    }
+
     if (missing(state) || is.null(state) || !is.environment(state)) {
       state <- new.env(parent = emptyenv())
     }
     state$downloadUrl <- downloadUrl
+    if (nzchar(savePath)) {
+      state$lastSavePath <- savePath
+    }
     downloadBlock <- jaspBase::createJaspHtml(title = "Download",
                                               text = downloadHtml)
     jaspResults[["syntheticDownload"]] <- downloadBlock
     jaspResults[["synthetic"]] <- synResults
+
 
     return(invisible())
   }
