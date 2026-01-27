@@ -14,7 +14,6 @@
 #' Returns a JASP results object with tables for types and preview, or a data.frame if
 #' jaspBase is not available (for headless testing).
 #' @keywords internal
-#' @importFrom base64enc base64encode
 #' @export
 
 `%||%` <- function(a, b) if (!is.null(a)) a else b
@@ -42,6 +41,10 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
   cols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
   cols <- intersect(cols, names(dataset))
   dat  <- dataset[, cols, drop = FALSE]
+
+  if (missing(state) || is.null(state) || !is.environment(state)) {
+    state <- new.env(parent = emptyenv())
+  }
 
   # --- 2) Classify variables -------------------------------------------------
   if (ncol(dat) == 0L) {
@@ -101,41 +104,46 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
       synDataset <- createSynDataset(title = "Synthetic Dataset", data = synResults)
       jaspResults[["syntheticData"]] <- synDataset
     }
-    downloadUrl <- ""
-    savePath <- ""
-    savePathInput <- trimws(options$savePath %||% "")
-    if (nrow(synResults) > 0L) {
-      csvLines <- capture.output(write.table(synResults, sep = ",", row.names = FALSE, col.names = TRUE, quote = TRUE))
-      csvText <- paste(csvLines, collapse = "\n")
-      csvBase64 <- base64enc::base64encode(charToRaw(csvText))
-      downloadUrl <- sprintf("data:text/csv;base64,%s", csvBase64)
-      downloadHtml <- sprintf('<a href="%s" download="synthetic-data.csv" target="_blank" rel="noopener">%s</a>',
-                              downloadUrl,
-                              "Download full synthetic dataset (CSV)")
-    } else {
-      downloadHtml <- "No synthetic rows to download."
-    }
-    if (nzchar(savePathInput)) {
-      savePath <- sub("^file:///?", "", savePathInput)
-      targetDir <- dirname(savePath)
-      if (targetDir != "" && !dir.exists(targetDir)) {
-        dir.create(targetDir, recursive = TRUE, showWarnings = FALSE)
-      }
-      utils::write.csv(synResults, file = savePath, row.names = FALSE)
-    }
-
-    if (missing(state) || is.null(state) || !is.environment(state)) {
-      state <- new.env(parent = emptyenv())
-    }
-    state$downloadUrl <- downloadUrl
-    if (nzchar(savePath)) {
-      state$lastSavePath <- savePath
-    }
-    downloadBlock <- jaspBase::createJaspHtml(title = "Download",
-                                              text = downloadHtml)
-    jaspResults[["syntheticDownload"]] <- downloadBlock
     jaspResults[["synthetic"]] <- synResults
 
+    sanitizeExportPath <- function(path) {
+      clean <- path
+      clean <- sub("^file://localhost", "", clean)
+      if (startsWith(clean, "file://")) {
+        clean <- substring(clean, nchar("file://") + 1L)
+      } else if (startsWith(clean, "file:/")) {
+        clean <- substring(clean, nchar("file:/") + 1L)
+      }
+      if (.Platform$OS.type == "windows" && grepl("^/[A-Za-z]:", clean))
+        clean <- substring(clean, 2L)
+      clean <- utils::URLdecode(clean)
+      normalizePath(clean, winslash = "/", mustWork = FALSE)
+    }
+
+    exportPath <- trimws(options$fileFull %||% state$fileFull %||% "")
+    if (nzchar(exportPath)) {
+      exportPath <- sanitizeExportPath(exportPath)
+      state$fileFull <- exportPath
+      state$lastSavePath <- exportPath
+      exportError <- NULL
+      tryCatch({
+        exportDir <- dirname(exportPath)
+        if (nzchar(exportDir) && !dir.exists(exportDir))
+          dir.create(exportDir, recursive = TRUE, showWarnings = FALSE)
+        utils::write.csv(synResults, file = exportPath, row.names = FALSE)
+      }, error = function(e) {
+        exportError <<- conditionMessage(e)
+      })
+      if (!is.null(exportError)) {
+        exportBlock <- jaspBase::createJaspHtml(
+          title = "Export error",
+          text = paste("Failed to save synthetic dataset:", exportError)
+        )
+        jaspResults[["syntheticExportError"]] <- exportBlock
+      }
+    } else if (!is.null(state$fileFull) && nzchar(state$fileFull)) {
+      state$lastSavePath <- state$fileFull
+    }
 
     return(invisible())
   }
