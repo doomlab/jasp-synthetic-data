@@ -9,6 +9,7 @@ Maintainer: JASP Team <info@jasp-stats.org>
 Description: Example module showing basic functionality. Use it for inspiration when creating your own module.
 License: GPL (>= 2)
 Encoding: UTF-8
+Language: en
 Imports:
   jaspBase,
   jaspGraphs,
