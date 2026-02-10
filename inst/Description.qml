@@ -15,11 +15,6 @@ Description
 	preloadData: true
 	requiresData: true
 
-	GroupTitle
-	{
-	  title: qsTr("Synthetic Data")
-	}
-
 	Analysis
 	{
 	  title: qsTr("Synthetic Data")
