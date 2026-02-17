@@ -10,6 +10,7 @@
 #' - variables: character vector of column names to use
 #' - n: desired number of synthetic rows (0 means match input n)
 #' - seed: RNG seed for reproducibility
+#' - rowCountMode: "same" to mirror the input row count or "custom" to respect the supplied `n`
 #'
 #' Returns a JASP results object with tables for types and preview, or a data.frame if
 #' jaspBase is not available (for headless testing).
@@ -63,10 +64,15 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     syn <- dat[0, , drop = FALSE]
   } else {
     set.seed(options$seed %||% 123)
-    n_target <- options$n %||% options$nRows %||% nrow(dat)
-    n_target <- suppressWarnings(as.integer(n_target))
-    if (is.na(n_target) || n_target <= 0)
+    rowCountMode <- options$rowCountMode %||% "same"
+    if (identical(rowCountMode, "same")) {
       n_target <- nrow(dat)
+    } else {
+      n_target <- options$n %||% options$nRows %||% nrow(dat)
+      n_target <- suppressWarnings(as.integer(n_target))
+      if (is.na(n_target) || n_target <= 0)
+        n_target <- nrow(dat)
+    }
 
     draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
     syn <- dat[draw_idx, , drop = FALSE]
