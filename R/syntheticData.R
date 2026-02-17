@@ -31,7 +31,6 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
   # --- 1) Get data -----------------------------------------------------------
   if (missing(dataset) || is.null(dataset)) {
     if (requireNamespace("jaspBase", quietly = TRUE)) {
-      # read only the needed columns if specified
       cols <- try(requestedCols, silent = TRUE)
       dataset <- jaspBase::readDatasetToEnd(columns = if (!inherits(cols, "try-error") && length(cols) > 0) cols else NULL)
     } else {
@@ -39,9 +38,12 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     }
   }
 
-  cols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
-  cols <- intersect(cols, names(dataset))
-  dat  <- dataset[, cols, drop = FALSE]
+  selectedCols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
+  selectedCols <- intersect(selectedCols, names(dataset))
+  dat  <- dataset[, selectedCols, drop = FALSE]
+  if (ncol(dat) > 0L) {
+    names(dat) <- selectedCols
+  }
 
   if (missing(state) || is.null(state) || !is.environment(state)) {
     state <- new.env(parent = emptyenv())
@@ -76,6 +78,9 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
     draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
     syn <- dat[draw_idx, , drop = FALSE]
+    if (ncol(syn) > 0L) {
+      names(syn) <- selectedCols
+    }
     jitterFraction <- options$jitterFraction %||% 0
     jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
     if (is.na(jitterFraction) || jitterFraction < 0)
@@ -116,17 +121,25 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
       synPreview$setData(headRows)
     }
     jaspResults[["syntheticPreview"]] <- synPreview
-    synResults <- syn
     createSynDataset <- if (exists("createJaspDataset", envir = asNamespace("jaspBase"), inherits = FALSE)) {
       jaspBase:::createJaspDataset
     } else {
       NULL
     }
     if (!is.null(createSynDataset)) {
-      synDataset <- createSynDataset(title = "Synthetic Dataset", data = synResults)
+      synDataset <- createSynDataset(title = "Synthetic Dataset", data = syn)
       jaspResults[["syntheticData"]] <- synDataset
     }
-    jaspResults[["synthetic"]] <- synResults
+    jaspResults[["synthetic"]] <- syn
+
+    requestedLabel <- if (length(selectedCols) > 0) paste(selectedCols, collapse = ", ") else "None"
+    syntheticLabel <- if (ncol(syn) > 0) paste(names(syn), collapse = ", ") else "None"
+    columnsHtml <- jaspBase::createJaspHtml(
+      title = "Selected vs. synthetic columns",
+      text = paste0("<b>Requested columns:</b> ", requestedLabel,
+                    "<br><b>Synthetic dataset columns:</b> ", syntheticLabel)
+    )
+    jaspResults[["syntheticColumnNames"]] <- columnsHtml
 
     sanitizeExportPath <- function(path) {
       clean <- path
@@ -152,7 +165,7 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
         exportDir <- dirname(exportPath)
         if (nzchar(exportDir) && !dir.exists(exportDir))
           dir.create(exportDir, recursive = TRUE, showWarnings = FALSE)
-        utils::write.csv(synResults, file = exportPath, row.names = FALSE)
+        utils::write.csv(syn, file = exportPath, row.names = FALSE)
       }, error = function(e) {
         exportError <<- conditionMessage(e)
       })
@@ -170,6 +183,5 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     return(invisible())
   }
 
-  # Fallback: return the data.frame directly (useful for testing outside JASP)
   syn
 }
