@@ -132,15 +132,6 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     }
     jaspResults[["synthetic"]] <- syn
 
-    requestedLabel <- if (length(selectedCols) > 0) paste(selectedCols, collapse = ", ") else "None"
-    syntheticLabel <- if (ncol(syn) > 0) paste(names(syn), collapse = ", ") else "None"
-    columnsHtml <- jaspBase::createJaspHtml(
-      title = "Selected vs. synthetic columns",
-      text = paste0("<b>Requested columns:</b> ", requestedLabel,
-                    "<br><b>Synthetic dataset columns:</b> ", syntheticLabel)
-    )
-    jaspResults[["syntheticColumnNames"]] <- columnsHtml
-
     sanitizeExportPath <- function(path) {
       clean <- path
       clean <- sub("^file://localhost", "", clean)
