@@ -165,7 +165,15 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
         exportDir <- dirname(exportPath)
         if (nzchar(exportDir) && !dir.exists(exportDir))
           dir.create(exportDir, recursive = TRUE, showWarnings = FALSE)
-        utils::write.csv(syn, file = exportPath, row.names = FALSE)
+        exportSyn <- syn
+        if (ncol(exportSyn) > 0L) {
+          decodedNames <- tryCatch(
+            jaspBase::decodeColNames(names(exportSyn)),
+            error = function(e) names(exportSyn)
+          )
+          names(exportSyn) <- decodedNames
+        }
+        utils::write.csv(exportSyn, file = exportPath, row.names = FALSE)
       }, error = function(e) {
         exportError <<- conditionMessage(e)
       })
