@@ -1,0 +1,230 @@
+---
+title: "Simulation-only checks for synthetic data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Simulation-only checks for the synthetic data analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+This vignette exercises only the simulation portion of the synthetic-data workflow. We avoid the JASP UI glue in this document and focus entirely on the row resampling and optional jittering that happens once JASP calls `syntheticData()`.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+library(dplyr)
+library(palmerpenguins)
+```
+
+## Synthetic Data Function
+
+```{r}
+resample_categorical_groups <- function(dat, categoricalCols) {
+  rows <- seq_len(nrow(dat))
+  key_mat <- lapply(dat[, categoricalCols, drop = FALSE], function(col) {
+    if (is.factor(col)) {
+      col <- as.character(col)
+    }
+    ifelse(is.na(col), "<NA>", col)
+  })
+  key_strings <- do.call(paste, c(key_mat, sep = "\r"))
+  groups <- split(rows, key_strings)
+  syn <- do.call(rbind, lapply(groups, function(idx) {
+    dat[sample(idx, size = length(idx), replace = TRUE), , drop = FALSE]
+  }))
+  syn
+}
+syntheticData <- function(jaspResults, dataset, options, state, ...) {
+  requestedCols <- options$variables
+  if (is.list(requestedCols)) {
+    requestedCols <- unlist(requestedCols, use.names = FALSE)
+  }
+  if (is.null(requestedCols)) {
+    requestedCols <- character(0)
+  }
+  requestedCols <- trimws(requestedCols)
+  requestedCols <- requestedCols[nzchar(requestedCols)]
+
+  # --- 1) Get data -----------------------------------------------------------
+  if (missing(dataset) || is.null(dataset)) {
+    if (requireNamespace("jaspBase", quietly = TRUE)) {
+      cols <- try(requestedCols, silent = TRUE)
+      dataset <- jaspBase::readDatasetToEnd(columns = if (!inherits(cols, "try-error") && length(cols) > 0) cols else NULL)
+    } else {
+      stop("Dataset not provided and jaspBase not available.")
+    }
+  }
+
+  selectedCols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
+  selectedCols <- intersect(selectedCols, names(dataset))
+  dat <- dataset[, selectedCols, drop = FALSE]
+  if (ncol(dat) > 0L) {
+    names(dat) <- selectedCols
+  }
+
+  # --- 2) Classify variables -------------------------------------------------
+  if (ncol(dat) == 0L) {
+    typeInfo <- data.frame(variable = character(), type = character(), stringsAsFactors = FALSE)
+  } else {
+    isNum <- vapply(dat, is.numeric, FUN.VALUE = logical(1))
+    typeInfo <- data.frame(
+      variable = names(dat),
+      type = ifelse(isNum, "Continuous", "Categorical"),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  # --- 3) Generate synthetic data for each column via jittered resampling ---
+  if (nrow(dat) == 0L) {
+    syn <- dat[0, , drop = FALSE]
+  } else {
+    set.seed(options$seed %||% 123)
+    rowCountMode <- options$rowCountMode %||% "same"
+    if (identical(rowCountMode, "same")) {
+      n_target <- nrow(dat)
+    } else {
+      n_target <- options$n %||% options$nRows %||% nrow(dat)
+      n_target <- suppressWarnings(as.integer(n_target))
+      if (is.na(n_target) || n_target <= 0) {
+        n_target <- nrow(dat)
+      }
+    }
+
+    numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
+    categoricalCols <- setdiff(names(dat), numericCols)
+
+    if (identical(rowCountMode, "same") && length(categoricalCols) > 0) {
+      syn <- resample_categorical_groups(dat, categoricalCols)
+    } else {
+      draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
+      syn <- dat[draw_idx, , drop = FALSE]
+    }
+    if (ncol(syn) > 0L) {
+      names(syn) <- selectedCols
+    }
+    jitterFraction <- options$jitterFraction %||% 0
+    jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
+    if (is.na(jitterFraction) || jitterFraction < 0) {
+      jitterFraction <- 0
+    }
+    numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
+    if (jitterFraction > 0 && length(numericCols) > 0) {
+      colSd <- vapply(dat[, numericCols, drop = FALSE], function(x) stats::sd(x, na.rm = TRUE), numeric(1))
+      colSd[is.na(colSd)] <- 0
+      for (col in numericCols) {
+        sd_val <- colSd[col]
+        if (is.na(sd_val) || sd_val <= 0) {
+          next
+        }
+        noise <- stats::rnorm(n = n_target, mean = 0, sd = jitterFraction * sd_val)
+        syn[[col]] <- syn[[col]] + noise
+      }
+    }
+  }
+
+  syn
+}
+```
+
+## Test Dataset
+
+```{r}
+data("penguins")
+```
+
+## Test Results
+
+```{r}
+cat_x <- lm(body_mass_g ~ sex, data = penguins)
+summary(cat_x)
+
+cont_x <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm, data = penguins)
+summary(cont_x)
+
+mix_x <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm + species, data = penguins)
+summary(mix_x)
+```
+
+## Create Data
+
+```{r run-simulation}
+options_cat_x <- list(
+  variables = c("body_mass_g", "sex"),
+  seed = 2026,
+  rowCountMode = "same",
+  n = nrow(penguins),
+  jitterFraction = 0
+)
+
+options_cont_x <- list(
+  variables = c("body_mass_g", "bill_length_mm", "bill_depth_mm"),
+  seed = 2026,
+  rowCountMode = "same",
+  n = nrow(penguins),
+  jitterFraction = 0.1
+)
+
+options_mix_x <- list(
+  variables = c("body_mass_g", "bill_length_mm", "bill_depth_mm", "species"),
+  seed = 2026,
+  rowCountMode = "same",
+  n = nrow(penguins),
+  jitterFraction = 0.08
+)
+
+simulated_cat_x <- syntheticData(
+  jaspResults = NULL,
+  dataset = penguins,
+  options = options_cat_x,
+  state = new.env(parent = emptyenv())
+)
+
+simulated_cont_x <- syntheticData(
+  jaspResults = NULL,
+  dataset = penguins,
+  options = options_cont_x,
+  state = new.env(parent = emptyenv())
+)
+
+simulated_mix_x <- syntheticData(
+  jaspResults = NULL,
+  dataset = penguins,
+  options = options_mix_x,
+  state = new.env(parent = emptyenv())
+)
+```
+
+## Test Simulated Data
+
+```{r}
+penguins %>% 
+  select(sex, body_mass_g) %>% 
+  na.omit() %>% 
+  pull(sex) %>% 
+  table()
+table(penguins$sex)
+table(simulated_cat_x$sex)
+
+cat_x_sim <- lm(body_mass_g ~ sex, data = simulated_cat_x)
+summary(cat_x)
+summary(cat_x_sim)
+
+cont_x_sim <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm, data = simulated_cont_x)
+summary(cont_x)
+summary(cont_x_sim)
+
+penguins %>% 
+  select(species, body_mass_g, bill_length_mm, bill_depth_mm) %>% 
+  na.omit() %>% 
+  pull(species) %>% 
+  table()
+table(penguins$species)
+table(simulated_mix_x$species)
+
+mix_x_sim <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm + species, data = simulated_mix_x)
+summary(mix_x)
+summary(mix_x_sim)
+```
