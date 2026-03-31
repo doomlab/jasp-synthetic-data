@@ -16,6 +16,7 @@ Imports:
   faux,
   base64enc
 Suggests:
+  synthpop,
   testthat
 Remotes:
   jasp-stats/jaspBase,
