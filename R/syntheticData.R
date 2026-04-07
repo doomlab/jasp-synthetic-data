@@ -89,40 +89,77 @@ aggregate_synthpop_replicates <- function(syn_object, reference) {
   result
 }
 
-ensure_categorical_labels <- function(syn, dat, categoricalCols) {
-  if (nrow(syn) == 0L || length(categoricalCols) == 0L) {
-    return(syn)
+allocate_combo_counts <- function(target_counts) {
+  total <- sum(target_counts)
+  if (total < length(target_counts)) {
+    return(target_counts)
   }
-
-  for (col in categoricalCols) {
-    original_labels <- unique(as.character(dat[[col]]))
-    synthetic_labels <- unique(as.character(syn[[col]]))
-    missing_labels <- setdiff(original_labels, synthetic_labels)
-    if (length(missing_labels) == 0L) {
-      next
+  zero_idx <- which(target_counts == 0L)
+  donor_idx <- which(target_counts > 1L)
+  i <- 1L
+  while (i <= length(zero_idx) && length(donor_idx) > 0L) {
+    zero <- zero_idx[i]
+    donor <- donor_idx[1L]
+    target_counts[[zero]] <- 1L
+    target_counts[[donor]] <- target_counts[[donor]] - 1L
+    if (target_counts[[donor]] <= 1L) {
+      donor_idx <- donor_idx[-1L]
     }
-
-    replace_rows <- sample.int(n = nrow(syn), size = length(missing_labels), replace = FALSE)
-    for (i in seq_along(missing_labels)) {
-      label <- missing_labels[i]
-      source_rows <- which(as.character(dat[[col]]) == label)
-      if (length(source_rows) == 0L) {
-        next
-      }
-      syn[replace_rows[i], ] <- dat[source_rows[1], , drop = FALSE]
-    }
+    i <- i + 1L
   }
-
-  syn
+  target_counts
 }
 
 resample_categorical_groups <- function(dat, categoricalCols, n_target, rowCountMode) {
-  draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
-  syn <- dat[draw_idx, , drop = FALSE]
-  if (identical(rowCountMode, "same")) {
-    syn <- ensure_categorical_labels(syn, dat, categoricalCols)
+  if (nrow(dat) == 0L || n_target == 0L) {
+    return(dat[0, , drop = FALSE])
   }
-  syn
+
+  if (length(categoricalCols) == 0L) {
+    draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
+    return(dat[draw_idx, , drop = FALSE])
+  }
+
+  combos <- dat[, categoricalCols, drop = FALSE]
+  combo_keys <- interaction(combos, drop = TRUE)
+  combo_indices <- split(seq_len(nrow(dat)), combo_keys)
+  combo_counts <- lengths(combo_indices)
+
+  if (identical(rowCountMode, "same")) {
+    target_counts <- combo_counts
+  } else {
+    raw_counts <- as.integer(stats::rmultinom(1L, size = n_target, prob = combo_counts))
+    names(raw_counts) <- names(combo_counts)
+    target_counts <- allocate_combo_counts(raw_counts)
+  }
+
+  total <- sum(target_counts)
+  if (total == 0L) {
+    return(dat[integer(0), , drop = FALSE])
+  }
+
+  result_idx <- integer(total)
+  position <- 1L
+  for (combo in names(target_counts)) {
+    count <- target_counts[[combo]]
+    if (count <= 0L) {
+      next
+    }
+    available <- combo_indices[[combo]]
+    if (length(available) == 0L) {
+      next
+    }
+    sampled <- sample(available, size = count, replace = TRUE)
+    end <- position + length(sampled) - 1L
+    result_idx[position:end] <- sampled
+    position <- end + 1L
+  }
+
+  if (length(result_idx) > 1L) {
+    result_idx <- result_idx[sample.int(length(result_idx))]
+  }
+
+  dat[result_idx, , drop = FALSE]
 }
 
 syntheticData <- function(jaspResults, dataset, options, state, ...) {
@@ -149,6 +186,12 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
   dat  <- dataset[, selectedCols, drop = FALSE]
   if (ncol(dat) > 0L) {
     names(dat) <- selectedCols
+  }
+
+  forceSynthpopFallback <- isTRUE(options$forceSynthpopFallback)
+  hasSynthpop <- requireNamespace("synthpop", quietly = TRUE)
+  if (!forceSynthpopFallback && !hasSynthpop) {
+    stop("The synthpop package is required to generate synthetic data.")
   }
 
   if (missing(state) || is.null(state) || !is.environment(state)) {
@@ -183,6 +226,16 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     }
 
     numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
+    minDiscreteLevels <- options$minDiscreteLevels %||% 5L
+    minDiscreteLevels <- suppressWarnings(as.integer(minDiscreteLevels))
+    if (is.na(minDiscreteLevels) || minDiscreteLevels < 1L) {
+      minDiscreteLevels <- 5L
+    }
+    discreteNumericCols <- names(Filter(function(x) {
+      values <- x[!is.na(x)]
+      length(unique(values)) <= minDiscreteLevels
+    }, dat[numericCols, drop = FALSE]))
+    numericCols <- setdiff(numericCols, discreteNumericCols)
     categoricalCols <- setdiff(names(dat), numericCols)
     n_simulations <- options$nSimulations %||% options$m %||% 5
     n_simulations <- suppressWarnings(as.integer(n_simulations))
@@ -192,7 +245,8 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     seed <- options$seed %||% 123
 
     syn <- NULL
-    if (requireNamespace("synthpop", quietly = TRUE)) {
+    useSynthpop <- hasSynthpop && !forceSynthpopFallback
+    if (useSynthpop) {
       synthpop_call <- tryCatch({
         synthpop::syn(
           data = dat,
@@ -210,12 +264,36 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
       if (!is.null(synthpop_call)) {
         syn <- aggregate_synthpop_replicates(synthpop_call, dat)
       }
+    } else if (forceSynthpopFallback) {
+      warning("forced synthpop fallback")
     }
     if (is.null(syn)) {
       syn <- resample_categorical_groups(dat, categoricalCols, n_target, rowCountMode)
     }
     if (ncol(syn) > 0L) {
       names(syn) <- selectedCols
+    }
+    if (length(discreteNumericCols) > 0L) {
+      for (col in discreteNumericCols) {
+        if (!(col %in% names(syn))) {
+          next
+        }
+        allowed <- sort(unique(dat[[col]][!is.na(dat[[col]])]))
+        if (length(allowed) == 0L) {
+          syn[[col]] <- NA_real_
+          next
+        }
+        mapped <- vapply(syn[[col]], function(value) {
+          if (is.na(value)) {
+            return(NA_real_)
+          }
+          allowed[which.min(abs(value - allowed))]
+        }, numeric(1))
+        if (is.integer(dat[[col]])) {
+          mapped <- as.integer(mapped)
+        }
+        syn[[col]] <- mapped
+      }
     }
     jitterFraction <- options$jitterFraction %||% 0
     jitterFraction <- suppressWarnings(as.numeric(jitterFraction))

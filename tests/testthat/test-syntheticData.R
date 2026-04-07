@@ -77,6 +77,24 @@ test_that("syntheticData preserves categorical labels when rowCountMode is same"
   expect_equal(table(syn$cat), table(base_dataset$cat))
 })
 
+test_that("fallback resampler keeps categorical distribution when n changes", {
+  options <- with_seed_options(1, list(rowCountMode = "custom", n = 9, forceSynthpopFallback = TRUE))
+  results <- make_results_env()
+  syn_val <- expect_warning(
+    syntheticData(
+      jaspResults = results,
+      dataset = base_dataset,
+      options = options,
+      state = make_state()
+    ),
+    "forced synthpop fallback"
+  )
+  syn <- get_synthetic(syn_val, results)
+
+  counts <- as.integer(table(syn$cat))
+  expect_true(all(abs(counts - c(7L, 2L)) <= 1L))
+})
+
 test_that("aggregate_synthpop_replicates averages numerics and honors factors", {
   replicates <- list(
     data.frame(

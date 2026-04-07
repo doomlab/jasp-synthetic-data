@@ -14,9 +14,9 @@ Imports:
   jaspBase,
   jaspGraphs,
   faux,
-  base64enc
+  base64enc,
+  synthpop
 Suggests:
-  synthpop,
   testthat
 Remotes:
   jasp-stats/jaspBase,

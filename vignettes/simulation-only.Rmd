@@ -1,10 +1,11 @@
 ---
 title: "Simulation-only checks for synthetic data"
-output: rmarkdown::html_vignette
-vignette: >
-  %\VignetteIndexEntry{Simulation-only checks for the synthetic data analysis}
-  %\VignetteEngine{knitr::rmarkdown}
-  %\VignetteEncoding{UTF-8}
+#output: rmarkdown::html_vignette
+output: html_document
+#vignette: >
+#  %\VignetteIndexEntry{Simulation-only checks for the synthetic data analysis}
+#  %\VignetteEngine{knitr::rmarkdown}
+#  %\VignetteEncoding{UTF-8}
 ---
 
 This vignette exercises only the simulation portion of the synthetic-data workflow. We avoid the JASP UI glue in this document and focus entirely on the row resampling and optional jittering that happens once JASP calls `syntheticData()`.
@@ -22,29 +23,157 @@ library(palmerpenguins)
 ## Synthetic Data Function
 
 ```{r}
-resample_categorical_groups <- function(dat, categoricalCols) {
-  rows <- seq_len(nrow(dat))
-  key_mat <- lapply(dat[, categoricalCols, drop = FALSE], function(col) {
-    if (is.factor(col)) {
-      col <- as.character(col)
-    }
-    ifelse(is.na(col), "<NA>", col)
-  })
-  key_strings <- do.call(paste, c(key_mat, sep = "\r"))
-  groups <- split(rows, key_strings)
-  syn <- do.call(rbind, lapply(groups, function(idx) {
-    dat[sample(idx, size = length(idx), replace = TRUE), , drop = FALSE]
-  }))
-  syn
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+clamp_numeric <- function(values, reference) {
+  if (length(values) == 0L || all(is.na(reference))) {
+    return(values)
+  }
+  min_val <- suppressWarnings(min(reference, na.rm = TRUE))
+  max_val <- suppressWarnings(max(reference, na.rm = TRUE))
+  if (is.finite(min_val) && is.finite(max_val)) {
+    values <- pmin(pmax(values, min_val), max_val)
+  }
+  values
 }
+
+most_frequent <- function(values) {
+  if (length(values) == 0L) {
+    return(character(0))
+  }
+  if (all(is.na(values))) {
+    return(NA_character_)
+  }
+  counts <- table(values, useNA = "ifany")
+  max_count <- max(counts)
+  winners <- names(counts)[counts == max_count]
+  winner <- winners[1]
+  if (is.na(winner)) {
+    return(NA_character_)
+  }
+  winner
+}
+
+aggregate_synthpop_replicates <- function(syn_object, reference) {
+  replicates <- syn_object$syn
+  if (is.data.frame(replicates)) {
+    replicates <- list(replicates)
+  }
+  if (length(replicates) == 0L) {
+    return(reference[0, , drop = FALSE])
+  }
+  n_rows <- vapply(replicates, nrow, integer(1))
+  if (length(unique(n_rows)) != 1L) {
+    stop("Synthpop returned replicates with inconsistent row counts.")
+  }
+  k <- n_rows[1]
+  result <- replicates[[1]]
+  for (col in names(reference)) {
+    reference_col <- reference[[col]]
+    if (is.numeric(reference_col)) {
+      matrix_vals <- vapply(replicates, function(df) as.numeric(df[[col]]), numeric(k))
+      row_mean <- rowMeans(matrix_vals, na.rm = TRUE)
+      row_mean[is.nan(row_mean)] <- NA_real_
+      row_mean <- clamp_numeric(row_mean, reference_col)
+      if (is.integer(reference_col)) {
+        row_mean <- round(row_mean)
+        row_mean <- as.integer(row_mean)
+      }
+      result[[col]] <- row_mean
+    } else {
+      matrix_vals <- vapply(replicates, function(df) as.character(df[[col]]), character(k))
+      resolved <- apply(matrix_vals, 1, function(row) most_frequent(row))
+      if (is.factor(reference_col)) {
+        result[[col]] <- factor(resolved, levels = levels(reference_col), ordered = is.ordered(reference_col))
+      } else if (is.logical(reference_col)) {
+        result[[col]] <- as.logical(resolved)
+      } else {
+        result[[col]] <- resolved
+      }
+    }
+  }
+  result
+}
+
+allocate_combo_counts <- function(target_counts) {
+  total <- sum(target_counts)
+  if (total < length(target_counts)) {
+    return(target_counts)
+  }
+  zero_idx <- which(target_counts == 0L)
+  donor_idx <- which(target_counts > 1L)
+  i <- 1L
+  while (i <= length(zero_idx) && length(donor_idx) > 0L) {
+    zero <- zero_idx[i]
+    donor <- donor_idx[1L]
+    target_counts[[zero]] <- 1L
+    target_counts[[donor]] <- target_counts[[donor]] - 1L
+    if (target_counts[[donor]] <= 1L) {
+      donor_idx <- donor_idx[-1L]
+    }
+    i <- i + 1L
+  }
+  target_counts
+}
+
+resample_categorical_groups <- function(dat, categoricalCols, n_target, rowCountMode) {
+  if (nrow(dat) == 0L || n_target == 0L) {
+    return(dat[0, , drop = FALSE])
+  }
+
+  if (length(categoricalCols) == 0L) {
+    draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
+    return(dat[draw_idx, , drop = FALSE])
+  }
+
+  combos <- dat[, categoricalCols, drop = FALSE]
+  combo_keys <- interaction(combos, drop = TRUE)
+  combo_indices <- split(seq_len(nrow(dat)), combo_keys)
+  combo_counts <- lengths(combo_indices)
+
+  if (identical(rowCountMode, "same")) {
+    target_counts <- combo_counts
+  } else {
+    raw_counts <- as.integer(stats::rmultinom(1L, size = n_target, prob = combo_counts))
+    names(raw_counts) <- names(combo_counts)
+    target_counts <- allocate_combo_counts(raw_counts)
+  }
+
+  total <- sum(target_counts)
+  if (total == 0L) {
+    return(dat[integer(0), , drop = FALSE])
+  }
+
+  result_idx <- integer(total)
+  position <- 1L
+  for (combo in names(target_counts)) {
+    count <- target_counts[[combo]]
+    if (count <= 0L) {
+      next
+    }
+    available <- combo_indices[[combo]]
+    if (length(available) == 0L) {
+      next
+    }
+    sampled <- sample(available, size = count, replace = TRUE)
+    end <- position + length(sampled) - 1L
+    result_idx[position:end] <- sampled
+    position <- end + 1L
+  }
+
+  if (length(result_idx) > 1L) {
+    result_idx <- result_idx[sample.int(length(result_idx))]
+  }
+
+  dat[result_idx, , drop = FALSE]
+}
+
 syntheticData <- function(jaspResults, dataset, options, state, ...) {
   requestedCols <- options$variables
-  if (is.list(requestedCols)) {
+  if (is.list(requestedCols))
     requestedCols <- unlist(requestedCols, use.names = FALSE)
-  }
-  if (is.null(requestedCols)) {
+  if (is.null(requestedCols))
     requestedCols <- character(0)
-  }
   requestedCols <- trimws(requestedCols)
   requestedCols <- requestedCols[nzchar(requestedCols)]
 
@@ -60,9 +189,17 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
   selectedCols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
   selectedCols <- intersect(selectedCols, names(dataset))
-  dat <- dataset[, selectedCols, drop = FALSE]
+  dat  <- dataset[, selectedCols, drop = FALSE]
   if (ncol(dat) > 0L) {
     names(dat) <- selectedCols
+  }
+
+  if (!requireNamespace("synthpop", quietly = TRUE)) {
+    stop("The synthpop package is required to generate synthetic data.")
+  }
+
+  if (missing(state) || is.null(state) || !is.environment(state)) {
+    state <- new.env(parent = emptyenv())
   }
 
   # --- 2) Classify variables -------------------------------------------------
@@ -72,7 +209,7 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     isNum <- vapply(dat, is.numeric, FUN.VALUE = logical(1))
     typeInfo <- data.frame(
       variable = names(dat),
-      type = ifelse(isNum, "Continuous", "Categorical"),
+      type     = ifelse(isNum, "Continuous", "Categorical"),
       stringsAsFactors = FALSE
     )
   }
@@ -88,37 +225,56 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     } else {
       n_target <- options$n %||% options$nRows %||% nrow(dat)
       n_target <- suppressWarnings(as.integer(n_target))
-      if (is.na(n_target) || n_target <= 0) {
+      if (is.na(n_target) || n_target <= 0)
         n_target <- nrow(dat)
-      }
     }
 
     numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
     categoricalCols <- setdiff(names(dat), numericCols)
+    n_simulations <- options$nSimulations %||% options$m %||% 5
+    n_simulations <- suppressWarnings(as.integer(n_simulations))
+    if (is.na(n_simulations) || n_simulations <= 0) {
+      n_simulations <- 1L
+    }
+    seed <- options$seed %||% 123
 
-    if (identical(rowCountMode, "same") && length(categoricalCols) > 0) {
-      syn <- resample_categorical_groups(dat, categoricalCols)
-    } else {
-      draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
-      syn <- dat[draw_idx, , drop = FALSE]
+    syn <- NULL
+    if (requireNamespace("synthpop", quietly = TRUE)) {
+      synthpop_call <- tryCatch({
+        synthpop::syn(
+          data = dat,
+          m = n_simulations,
+          k = n_target,
+          seed = seed,
+          print.flag = FALSE,
+          drop.not.used = FALSE,
+          drop.pred.only = FALSE
+        )
+      }, error = function(e) {
+        warning("synthpop::syn failed; falling back to row resampling: ", conditionMessage(e))
+        NULL
+      })
+      if (!is.null(synthpop_call)) {
+        syn <- aggregate_synthpop_replicates(synthpop_call, dat)
+      }
+    }
+    if (is.null(syn)) {
+      syn <- resample_categorical_groups(dat, categoricalCols, n_target, rowCountMode)
     }
     if (ncol(syn) > 0L) {
       names(syn) <- selectedCols
     }
     jitterFraction <- options$jitterFraction %||% 0
     jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
-    if (is.na(jitterFraction) || jitterFraction < 0) {
+    if (is.na(jitterFraction) || jitterFraction < 0)
       jitterFraction <- 0
-    }
-    numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
     if (jitterFraction > 0 && length(numericCols) > 0) {
       colSd <- vapply(dat[, numericCols, drop = FALSE], function(x) stats::sd(x, na.rm = TRUE), numeric(1))
       colSd[is.na(colSd)] <- 0
       for (col in numericCols) {
         sd_val <- colSd[col]
-        if (is.na(sd_val) || sd_val <= 0) {
+        if (is.na(sd_val) || sd_val <= 0)
           next
-        }
         noise <- stats::rnorm(n = n_target, mean = 0, sd = jitterFraction * sd_val)
         syn[[col]] <- syn[[col]] + noise
       }
