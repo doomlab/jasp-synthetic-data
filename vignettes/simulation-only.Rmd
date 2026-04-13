@@ -1,11 +1,10 @@
 ---
 title: "Simulation-only checks for synthetic data"
-#output: rmarkdown::html_vignette
 output: html_document
-#vignette: >
-#  %\VignetteIndexEntry{Simulation-only checks for the synthetic data analysis}
-#  %\VignetteEngine{knitr::rmarkdown}
-#  %\VignetteEncoding{UTF-8}
+vignette: >
+  %\VignetteIndexEntry{Simulation-only checks for the synthetic data analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
 This vignette exercises only the simulation portion of the synthetic-data workflow. We avoid the JASP UI glue in this document and focus entirely on the row resampling and optional jittering that happens once JASP calls `syntheticData()`.
@@ -23,6 +22,25 @@ library(palmerpenguins)
 ## Synthetic Data Function
 
 ```{r}
+#' Synthetic data from categorical variables
+#'
+#' This analysis inspects the selected variables of the active JASP dataset,
+#' reports whether each column is treated as continuous or categorical, and
+#' (in this simplified phase) generates synthetic data for categorical columns
+#' by resampling observed rows with replacement. The row-level resampling
+#' preserves the empirical joint distribution of the original data.
+#'
+#' Expected options (from QML):
+#' - variables: character vector of column names to use
+#' - n: desired number of synthetic rows (0 means match input n)
+#' - seed: RNG seed for reproducibility
+#' - rowCountMode: "same" to mirror the input row count or "custom" to respect the supplied `n`
+#'
+#' Returns a JASP results object with tables for types and preview, or a data.frame if
+#' jaspBase is not available (for headless testing).
+#' @keywords internal
+#' @export
+
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 clamp_numeric <- function(values, reference) {
@@ -194,7 +212,9 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     names(dat) <- selectedCols
   }
 
-  if (!requireNamespace("synthpop", quietly = TRUE)) {
+  forceSynthpopFallback <- isTRUE(options$forceSynthpopFallback)
+  hasSynthpop <- requireNamespace("synthpop", quietly = TRUE)
+  if (!forceSynthpopFallback && !hasSynthpop) {
     stop("The synthpop package is required to generate synthetic data.")
   }
 
@@ -230,6 +250,16 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     }
 
     numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
+    minDiscreteLevels <- options$minDiscreteLevels %||% 5L
+    minDiscreteLevels <- suppressWarnings(as.integer(minDiscreteLevels))
+    if (is.na(minDiscreteLevels) || minDiscreteLevels < 1L) {
+      minDiscreteLevels <- 5L
+    }
+    discreteNumericCols <- names(Filter(function(x) {
+      values <- x[!is.na(x)]
+      length(unique(values)) <= minDiscreteLevels
+    }, dat[numericCols, drop = FALSE]))
+    numericCols <- setdiff(numericCols, discreteNumericCols)
     categoricalCols <- setdiff(names(dat), numericCols)
     n_simulations <- options$nSimulations %||% options$m %||% 5
     n_simulations <- suppressWarnings(as.integer(n_simulations))
@@ -239,7 +269,8 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     seed <- options$seed %||% 123
 
     syn <- NULL
-    if (requireNamespace("synthpop", quietly = TRUE)) {
+    useSynthpop <- hasSynthpop && !forceSynthpopFallback
+    if (useSynthpop) {
       synthpop_call <- tryCatch({
         synthpop::syn(
           data = dat,
@@ -257,12 +288,36 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
       if (!is.null(synthpop_call)) {
         syn <- aggregate_synthpop_replicates(synthpop_call, dat)
       }
+    } else if (forceSynthpopFallback) {
+      warning("forced synthpop fallback")
     }
     if (is.null(syn)) {
       syn <- resample_categorical_groups(dat, categoricalCols, n_target, rowCountMode)
     }
     if (ncol(syn) > 0L) {
       names(syn) <- selectedCols
+    }
+    if (length(discreteNumericCols) > 0L) {
+      for (col in discreteNumericCols) {
+        if (!(col %in% names(syn))) {
+          next
+        }
+        allowed <- sort(unique(dat[[col]][!is.na(dat[[col]])]))
+        if (length(allowed) == 0L) {
+          syn[[col]] <- NA_real_
+          next
+        }
+        mapped <- vapply(syn[[col]], function(value) {
+          if (is.na(value)) {
+            return(NA_real_)
+          }
+          allowed[which.min(abs(value - allowed))]
+        }, numeric(1))
+        if (is.integer(dat[[col]])) {
+          mapped <- as.integer(mapped)
+        }
+        syn[[col]] <- mapped
+      }
     }
     jitterFraction <- options$jitterFraction %||% 0
     jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
@@ -283,6 +338,7 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
   syn
 }
+
 ```
 
 ## Test Dataset
