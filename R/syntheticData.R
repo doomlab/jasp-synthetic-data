@@ -46,24 +46,133 @@ prepare_for_synthpop <- function(dat) {
   dat
 }
 
+#' Calibrate synthetic numeric values to match observed conditional means/SDs.
+#'
+#' For every continuous numeric column, and for every level of every categorical
+#' column present in `result`, this function applies a per-cell location-scale
+#' transform so that the synthetic within-category mean and SD match those of
+#' the original data.
+#'
+#' Why this is necessary
+#' ---------------------
+#' Synthpop fits a sequential conditional model, so each replicate internally
+#' preserves group-level structure. But once we pick a single replicate (the
+#' right thing to do for categorical integrity), sampling noise means the
+#' within-group moments in that replicate may drift from the originals.
+#' Averaging across replicates would fix the moments but sever the row-level
+#' cat→num relationship. Calibration fixes the moments *without* touching the
+#' pairing of rows to groups.
+#'
+#' Transform applied per (numeric col, category level) cell
+#' ---------------------------------------------------------
+#'   x_cal = (x_syn - mean_syn) / sd_syn * sd_ref + mean_ref
+#'
+#' Edge cases:
+#'   - Cell n < 2 or sd_syn ≈ 0: shift-only (mean matched, spread unchanged).
+#'   - Cell absent in reference: values left as-is.
+#'   - Result is clamped to the global observed range of the numeric column.
+#'
+#' @param result    Synthetic data.frame (one chosen replicate).
+#' @param reference Original data.frame.
+#' @param cat_cols  Character vector of categorical column names to condition on.
+#' @param num_cols  Character vector of continuous numeric column names to adjust.
+calibrate_conditional_moments <- function(result, reference, cat_cols, num_cols) {
+  if (length(cat_cols) == 0L || length(num_cols) == 0L) {
+    return(result)
+  }
+
+  # Build a single grouping key per row by pasting all category values together.
+  # This handles any number of categorical columns simultaneously.
+  make_key <- function(df) {
+    if (length(cat_cols) == 1L) {
+      as.character(df[[cat_cols]])
+    } else {
+      apply(df[, cat_cols, drop = FALSE], 1, paste, collapse = "\x00")
+    }
+  }
+
+  ref_keys <- make_key(reference)
+  syn_keys <- make_key(result)
+
+  for (num_col in num_cols) {
+    ref_vals <- reference[[num_col]]
+    syn_vals <- as.numeric(result[[num_col]])
+
+    global_min <- suppressWarnings(min(ref_vals, na.rm = TRUE))
+    global_max <- suppressWarnings(max(ref_vals, na.rm = TRUE))
+
+    unique_keys <- unique(syn_keys[!is.na(syn_keys)])
+
+    for (key in unique_keys) {
+      syn_idx <- which(syn_keys == key)
+      ref_idx <- which(ref_keys == key)
+
+      if (length(ref_idx) == 0L) next  # cell not seen in reference → leave as-is
+
+      ref_cell <- ref_vals[ref_idx]
+      syn_cell <- syn_vals[syn_idx]
+
+      ref_mean <- mean(ref_cell, na.rm = TRUE)
+      syn_mean <- mean(syn_cell, na.rm = TRUE)
+
+      if (is.nan(ref_mean) || is.nan(syn_mean)) next
+
+      ref_sd <- if (length(ref_idx) >= 2L) stats::sd(ref_cell, na.rm = TRUE) else NA_real_
+      syn_sd <- if (length(syn_idx) >= 2L) stats::sd(syn_cell, na.rm = TRUE) else NA_real_
+
+      can_scale <- !is.na(ref_sd) && !is.na(syn_sd) &&
+                   is.finite(ref_sd) && is.finite(syn_sd) &&
+                   syn_sd > .Machine$double.eps
+
+      if (can_scale) {
+        calibrated <- (syn_cell - syn_mean) / syn_sd * ref_sd + ref_mean
+      } else {
+        # SD unavailable or zero: shift only
+        calibrated <- syn_cell - syn_mean + ref_mean
+      }
+
+      # Clamp to global observed range
+      if (is.finite(global_min) && is.finite(global_max)) {
+        calibrated <- pmin(pmax(calibrated, global_min), global_max)
+      }
+
+      syn_vals[syn_idx] <- calibrated
+    }
+
+    result[[num_col]] <- syn_vals
+  }
+
+  result
+}
+
 #' Aggregate multiple synthpop replicates into a single synthetic dataset.
 #'
-#' Strategy by column type:
+#' Strategy
+#' --------
+#' 1. Pick ONE replicate at random. This keeps every row internally consistent:
+#'    the categorical label and all numeric values on that row come from the
+#'    same synthpop draw, so the row-level cat→num relationship is intact.
+#'    (Averaging numerics across replicates while drawing categoricals from one
+#'    replicate would sever that relationship — row 47's group label and its
+#'    numeric values would no longer belong together.)
 #'
-#'   Numeric (continuous): row-wise mean across replicates, then clamped to the
-#'   observed range and rounded/cast back to integer if the original was integer.
+#' 2. Apply conditional moment calibration. Sampling noise in a single replicate
+#'    means within-group means/SDs may drift from the originals. We correct that
+#'    with a per-(group, numeric-col) location-scale transform that matches the
+#'    observed conditional moments without disturbing which row belongs to which
+#'    group. See `calibrate_conditional_moments` for details.
 #'
-#'   Categorical (factor, character, logical): one replicate is chosen **at
-#'   random** per column. Majority-voting is intentionally avoided because it
-#'   compresses the marginal distribution toward the modal category and breaks
-#'   inter-variable associations. Drawing from a single replicate preserves the
-#'   joint distribution that synthpop's sequential model learned.
+#' 3. Cast columns back to their original R types (integer, ordered factor, …).
 #'
 #' @param syn_object  Return value of `synthpop::syn()`.
-#' @param reference   The original data.frame (used for type metadata and
-#'                    clamping ranges).
-#' @param seed        Integer seed so the replicate selection is reproducible.
-aggregate_synthpop_replicates <- function(syn_object, reference, seed = 123L) {
+#' @param reference   The original data.frame (type metadata + clamping ranges).
+#' @param cat_cols    Names of categorical columns to condition on during calibration.
+#' @param num_cols    Names of continuous numeric columns to calibrate.
+#' @param seed        Integer seed for reproducible replicate selection.
+aggregate_synthpop_replicates <- function(syn_object, reference,
+                                          cat_cols = character(),
+                                          num_cols = character(),
+                                          seed = 123L) {
   replicates <- syn_object$syn
   if (is.data.frame(replicates)) {
     replicates <- list(replicates)
@@ -76,67 +185,39 @@ aggregate_synthpop_replicates <- function(syn_object, reference, seed = 123L) {
   if (length(unique(n_rows)) != 1L) {
     stop("Synthpop returned replicates with inconsistent row counts.")
   }
-  k <- n_rows[1]
   n_reps <- length(replicates)
 
-  # Start with a copy of the first replicate so column order / types are kept
-  result <- replicates[[1]]
-
+  # --- Step 1: pick one coherent replicate -----------------------------------
   set.seed(seed)
+  result <- replicates[[sample.int(n_reps, 1L)]]
 
+  # --- Step 2: fix column types to match reference ---------------------------
   for (col in names(reference)) {
     reference_col <- reference[[col]]
+    raw_vals <- result[[col]]
 
-    if (is.numeric(reference_col)) {
-      # ------------------------------------------------------------------ #
-      # Continuous: average across all replicates, then clamp & cast        #
-      # ------------------------------------------------------------------ #
-      matrix_vals <- vapply(
-        replicates,
-        function(df) as.numeric(df[[col]]),
-        numeric(k)
+    if (is.factor(reference_col)) {
+      result[[col]] <- factor(
+        as.character(raw_vals),
+        levels  = levels(reference_col),
+        ordered = is.ordered(reference_col)
       )
-      if (is.matrix(matrix_vals)) {
-        row_mean <- rowMeans(matrix_vals, na.rm = TRUE)
-      } else {
-        row_mean <- matrix_vals  # single replicate edge-case
-      }
-      row_mean[is.nan(row_mean)] <- NA_real_
-      row_mean <- clamp_numeric(row_mean, reference_col)
-      if (is.integer(reference_col)) {
-        row_mean <- as.integer(round(row_mean))
-      }
-      result[[col]] <- row_mean
-
-    } else {
-      # ------------------------------------------------------------------ #
-      # Categorical: pick ONE replicate at random for this column            #
-      #                                                                      #
-      # Why not majority-vote?                                               #
-      #   - Voting shrinks the distribution toward the mode, inflating its   #
-      #     frequency at the expense of minority categories.                 #
-      #   - It breaks correlations between columns because each column       #
-      #     independently picks its "winner" row-by-row.                    #
-      #   - A single synthpop replicate already reflects the full joint      #
-      #     distribution; drawing from it preserves that structure.          #
-      # ------------------------------------------------------------------ #
-      chosen_rep <- replicates[[sample.int(n_reps, 1L)]]
-      raw_vals   <- as.character(chosen_rep[[col]])
-
-      if (is.factor(reference_col)) {
-        result[[col]] <- factor(
-          raw_vals,
-          levels  = levels(reference_col),
-          ordered = is.ordered(reference_col)
-        )
-      } else if (is.logical(reference_col)) {
-        result[[col]] <- as.logical(raw_vals)
-      } else {
-        # character: return as factor to match prepare_for_synthpop coercion
-        result[[col]] <- factor(raw_vals, levels = levels(factor(reference_col)))
-      }
+    } else if (is.logical(reference_col)) {
+      result[[col]] <- as.logical(as.character(raw_vals))
+    } else if (is.character(reference_col)) {
+      result[[col]] <- factor(
+        as.character(raw_vals),
+        levels = levels(factor(reference_col))
+      )
+    } else if (is.integer(reference_col)) {
+      result[[col]] <- as.integer(round(as.numeric(raw_vals)))
+    } else if (is.numeric(reference_col)) {
+      result[[col]] <- as.numeric(raw_vals)
     }
   }
+
+  # --- Step 3: calibrate within-category conditional moments ----------------
+  result <- calibrate_conditional_moments(result, reference, cat_cols, num_cols)
 
   result
 }
@@ -271,7 +352,14 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
     # Pass original `dat` (not dat_for_syn) as reference so type metadata
     # (integer, ordered factor, logical) round-trips correctly.
-    syn <- aggregate_synthpop_replicates(synthpop_call, dat, seed = seed)
+    # cat_cols / num_cols allow calibrate_conditional_moments to correct
+    # within-category means and SDs on the chosen replicate.
+    syn <- aggregate_synthpop_replicates(
+      synthpop_call, dat,
+      cat_cols = categoricalCols,
+      num_cols = numericCols,
+      seed     = seed
+    )
 
     if (ncol(syn) > 0L) {
       names(syn) <- selectedCols
