@@ -26,9 +26,10 @@ library(palmerpenguins)
 #'
 #' This analysis inspects the selected variables of the active JASP dataset,
 #' reports whether each column is treated as continuous or categorical, and
-#' (in this simplified phase) generates synthetic data for categorical columns
-#' by resampling observed rows with replacement. The row-level resampling
-#' preserves the empirical joint distribution of the original data.
+#' generates synthetic data using the synthpop package. Categorical variables
+#' are properly modelled via CART (or the user-selected method) and aggregated
+#' across replicates by randomly selecting one replicate per categorical column,
+#' preserving both marginal distributions and inter-variable associations.
 #'
 #' Expected options (from QML):
 #' - variables: character vector of column names to use
@@ -55,24 +56,147 @@ clamp_numeric <- function(values, reference) {
   values
 }
 
-most_frequent <- function(values) {
-  if (length(values) == 0L) {
-    return(character(0))
+#' Prepare a data.frame for synthpop
+#'
+#' Coerces character columns to factors so synthpop treats them as proper
+#' categorical variables (using polyreg / cart rather than pmm).
+#' Ordered factors are preserved as-is.
+prepare_for_synthpop <- function(dat) {
+  for (col in names(dat)) {
+    if (is.character(dat[[col]])) {
+      dat[[col]] <- factor(dat[[col]])
+    }
   }
-  if (all(is.na(values))) {
-    return(NA_character_)
-  }
-  counts <- table(values, useNA = "ifany")
-  max_count <- max(counts)
-  winners <- names(counts)[counts == max_count]
-  winner <- winners[1]
-  if (is.na(winner)) {
-    return(NA_character_)
-  }
-  winner
+  dat
 }
 
-aggregate_synthpop_replicates <- function(syn_object, reference) {
+#' Calibrate synthetic numeric values to match observed conditional means/SDs.
+#'
+#' For every continuous numeric column, and for every level of every categorical
+#' column present in `result`, this function applies a per-cell location-scale
+#' transform so that the synthetic within-category mean and SD match those of
+#' the original data.
+#'
+#' Why this is necessary
+#' ---------------------
+#' Synthpop fits a sequential conditional model, so each replicate internally
+#' preserves group-level structure. But once we pick a single replicate (the
+#' right thing to do for categorical integrity), sampling noise means the
+#' within-group moments in that replicate may drift from the originals.
+#' Averaging across replicates would fix the moments but sever the row-level
+#' cat→num relationship. Calibration fixes the moments *without* touching the
+#' pairing of rows to groups.
+#'
+#' Transform applied per (numeric col, category level) cell
+#' ---------------------------------------------------------
+#'   x_cal = (x_syn - mean_syn) / sd_syn * sd_ref + mean_ref
+#'
+#' Edge cases:
+#'   - Cell n < 2 or sd_syn ≈ 0: shift-only (mean matched, spread unchanged).
+#'   - Cell absent in reference: values left as-is.
+#'   - Result is clamped to the global observed range of the numeric column.
+#'
+#' @param result    Synthetic data.frame (one chosen replicate).
+#' @param reference Original data.frame.
+#' @param cat_cols  Character vector of categorical column names to condition on.
+#' @param num_cols  Character vector of continuous numeric column names to adjust.
+calibrate_conditional_moments <- function(result, reference, cat_cols, num_cols) {
+  if (length(cat_cols) == 0L || length(num_cols) == 0L) {
+    return(result)
+  }
+
+  # Build a single grouping key per row by pasting all category values together.
+  # This handles any number of categorical columns simultaneously.
+  make_key <- function(df) {
+    if (length(cat_cols) == 1L) {
+      as.character(df[[cat_cols]])
+    } else {
+      apply(df[, cat_cols, drop = FALSE], 1, paste, collapse = " ")
+    }
+  }
+
+  ref_keys <- make_key(reference)
+  syn_keys <- make_key(result)
+
+  for (num_col in num_cols) {
+    ref_vals <- reference[[num_col]]
+    syn_vals <- as.numeric(result[[num_col]])
+
+    global_min <- suppressWarnings(min(ref_vals, na.rm = TRUE))
+    global_max <- suppressWarnings(max(ref_vals, na.rm = TRUE))
+
+    unique_keys <- unique(syn_keys[!is.na(syn_keys)])
+
+    for (key in unique_keys) {
+      syn_idx <- which(syn_keys == key)
+      ref_idx <- which(ref_keys == key)
+
+      if (length(ref_idx) == 0L) next  # cell not seen in reference → leave as-is
+
+      ref_cell <- ref_vals[ref_idx]
+      syn_cell <- syn_vals[syn_idx]
+
+      ref_mean <- mean(ref_cell, na.rm = TRUE)
+      syn_mean <- mean(syn_cell, na.rm = TRUE)
+
+      if (is.nan(ref_mean) || is.nan(syn_mean)) next
+
+      ref_sd <- if (length(ref_idx) >= 2L) stats::sd(ref_cell, na.rm = TRUE) else NA_real_
+      syn_sd <- if (length(syn_idx) >= 2L) stats::sd(syn_cell, na.rm = TRUE) else NA_real_
+
+      can_scale <- !is.na(ref_sd) && !is.na(syn_sd) &&
+                   is.finite(ref_sd) && is.finite(syn_sd) &&
+                   syn_sd > .Machine$double.eps
+
+      if (can_scale) {
+        calibrated <- (syn_cell - syn_mean) / syn_sd * ref_sd + ref_mean
+      } else {
+        # SD unavailable or zero: shift only
+        calibrated <- syn_cell - syn_mean + ref_mean
+      }
+
+      # Clamp to global observed range
+      if (is.finite(global_min) && is.finite(global_max)) {
+        calibrated <- pmin(pmax(calibrated, global_min), global_max)
+      }
+
+      syn_vals[syn_idx] <- calibrated
+    }
+
+    result[[num_col]] <- syn_vals
+  }
+
+  result
+}
+
+#' Aggregate multiple synthpop replicates into a single synthetic dataset.
+#'
+#' Strategy
+#' --------
+#' 1. Pick ONE replicate at random. This keeps every row internally consistent:
+#'    the categorical label and all numeric values on that row come from the
+#'    same synthpop draw, so the row-level cat→num relationship is intact.
+#'    (Averaging numerics across replicates while drawing categoricals from one
+#'    replicate would sever that relationship — row 47's group label and its
+#'    numeric values would no longer belong together.)
+#'
+#' 2. Apply conditional moment calibration. Sampling noise in a single replicate
+#'    means within-group means/SDs may drift from the originals. We correct that
+#'    with a per-(group, numeric-col) location-scale transform that matches the
+#'    observed conditional moments without disturbing which row belongs to which
+#'    group. See `calibrate_conditional_moments` for details.
+#'
+#' 3. Cast columns back to their original R types (integer, ordered factor, …).
+#'
+#' @param syn_object  Return value of `synthpop::syn()`.
+#' @param reference   The original data.frame (type metadata + clamping ranges).
+#' @param cat_cols    Names of categorical columns to condition on during calibration.
+#' @param num_cols    Names of continuous numeric columns to calibrate.
+#' @param seed        Integer seed for reproducible replicate selection.
+aggregate_synthpop_replicates <- function(syn_object, reference,
+                                          cat_cols = character(),
+                                          num_cols = character(),
+                                          seed = 123L) {
   replicates <- syn_object$syn
   if (is.data.frame(replicates)) {
     replicates <- list(replicates)
@@ -80,110 +204,46 @@ aggregate_synthpop_replicates <- function(syn_object, reference) {
   if (length(replicates) == 0L) {
     return(reference[0, , drop = FALSE])
   }
+
   n_rows <- vapply(replicates, nrow, integer(1))
   if (length(unique(n_rows)) != 1L) {
     stop("Synthpop returned replicates with inconsistent row counts.")
   }
-  k <- n_rows[1]
-  result <- replicates[[1]]
+  n_reps <- length(replicates)
+
+  # --- Step 1: pick one coherent replicate -----------------------------------
+  set.seed(seed)
+  result <- replicates[[sample.int(n_reps, 1L)]]
+
+  # --- Step 2: fix column types to match reference ---------------------------
   for (col in names(reference)) {
     reference_col <- reference[[col]]
-    if (is.numeric(reference_col)) {
-      matrix_vals <- vapply(replicates, function(df) as.numeric(df[[col]]), numeric(k))
-      row_mean <- rowMeans(matrix_vals, na.rm = TRUE)
-      row_mean[is.nan(row_mean)] <- NA_real_
-      row_mean <- clamp_numeric(row_mean, reference_col)
-      if (is.integer(reference_col)) {
-        row_mean <- round(row_mean)
-        row_mean <- as.integer(row_mean)
-      }
-      result[[col]] <- row_mean
-    } else {
-      matrix_vals <- vapply(replicates, function(df) as.character(df[[col]]), character(k))
-      resolved <- apply(matrix_vals, 1, function(row) most_frequent(row))
-      if (is.factor(reference_col)) {
-        result[[col]] <- factor(resolved, levels = levels(reference_col), ordered = is.ordered(reference_col))
-      } else if (is.logical(reference_col)) {
-        result[[col]] <- as.logical(resolved)
-      } else {
-        result[[col]] <- resolved
-      }
+    raw_vals <- result[[col]]
+
+    if (is.factor(reference_col)) {
+      result[[col]] <- factor(
+        as.character(raw_vals),
+        levels  = levels(reference_col),
+        ordered = is.ordered(reference_col)
+      )
+    } else if (is.logical(reference_col)) {
+      result[[col]] <- as.logical(as.character(raw_vals))
+    } else if (is.character(reference_col)) {
+      result[[col]] <- factor(
+        as.character(raw_vals),
+        levels = levels(factor(reference_col))
+      )
+    } else if (is.integer(reference_col)) {
+      result[[col]] <- as.integer(round(as.numeric(raw_vals)))
+    } else if (is.numeric(reference_col)) {
+      result[[col]] <- as.numeric(raw_vals)
     }
   }
+
+  # --- Step 3: calibrate within-category conditional moments ----------------
+  result <- calibrate_conditional_moments(result, reference, cat_cols, num_cols)
+
   result
-}
-
-allocate_combo_counts <- function(target_counts) {
-  total <- sum(target_counts)
-  if (total < length(target_counts)) {
-    return(target_counts)
-  }
-  zero_idx <- which(target_counts == 0L)
-  donor_idx <- which(target_counts > 1L)
-  i <- 1L
-  while (i <= length(zero_idx) && length(donor_idx) > 0L) {
-    zero <- zero_idx[i]
-    donor <- donor_idx[1L]
-    target_counts[[zero]] <- 1L
-    target_counts[[donor]] <- target_counts[[donor]] - 1L
-    if (target_counts[[donor]] <= 1L) {
-      donor_idx <- donor_idx[-1L]
-    }
-    i <- i + 1L
-  }
-  target_counts
-}
-
-resample_categorical_groups <- function(dat, categoricalCols, n_target, rowCountMode) {
-  if (nrow(dat) == 0L || n_target == 0L) {
-    return(dat[0, , drop = FALSE])
-  }
-
-  if (length(categoricalCols) == 0L) {
-    draw_idx <- sample.int(n = nrow(dat), size = n_target, replace = TRUE)
-    return(dat[draw_idx, , drop = FALSE])
-  }
-
-  combos <- dat[, categoricalCols, drop = FALSE]
-  combo_keys <- interaction(combos, drop = TRUE)
-  combo_indices <- split(seq_len(nrow(dat)), combo_keys)
-  combo_counts <- lengths(combo_indices)
-
-  if (identical(rowCountMode, "same")) {
-    target_counts <- combo_counts
-  } else {
-    raw_counts <- as.integer(stats::rmultinom(1L, size = n_target, prob = combo_counts))
-    names(raw_counts) <- names(combo_counts)
-    target_counts <- allocate_combo_counts(raw_counts)
-  }
-
-  total <- sum(target_counts)
-  if (total == 0L) {
-    return(dat[integer(0), , drop = FALSE])
-  }
-
-  result_idx <- integer(total)
-  position <- 1L
-  for (combo in names(target_counts)) {
-    count <- target_counts[[combo]]
-    if (count <= 0L) {
-      next
-    }
-    available <- combo_indices[[combo]]
-    if (length(available) == 0L) {
-      next
-    }
-    sampled <- sample(available, size = count, replace = TRUE)
-    end <- position + length(sampled) - 1L
-    result_idx[position:end] <- sampled
-    position <- end + 1L
-  }
-
-  if (length(result_idx) > 1L) {
-    result_idx <- result_idx[sample.int(length(result_idx))]
-  }
-
-  dat[result_idx, , drop = FALSE]
 }
 
 syntheticData <- function(jaspResults, dataset, options, state, ...) {
@@ -199,7 +259,9 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
   if (missing(dataset) || is.null(dataset)) {
     if (requireNamespace("jaspBase", quietly = TRUE)) {
       cols <- try(requestedCols, silent = TRUE)
-      dataset <- jaspBase::readDatasetToEnd(columns = if (!inherits(cols, "try-error") && length(cols) > 0) cols else NULL)
+      dataset <- jaspBase::readDatasetToEnd(
+        columns = if (!inherits(cols, "try-error") && length(cols) > 0) cols else NULL
+      )
     } else {
       stop("Dataset not provided and jaspBase not available.")
     }
@@ -207,14 +269,13 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
   selectedCols <- if (length(requestedCols) > 0) requestedCols else names(dataset)
   selectedCols <- intersect(selectedCols, names(dataset))
-  dat  <- dataset[, selectedCols, drop = FALSE]
+  dat <- dataset[, selectedCols, drop = FALSE]
   if (ncol(dat) > 0L) {
     names(dat) <- selectedCols
   }
 
-  forceSynthpopFallback <- isTRUE(options$forceSynthpopFallback)
   hasSynthpop <- requireNamespace("synthpop", quietly = TRUE)
-  if (!forceSynthpopFallback && !hasSynthpop) {
+  if (!hasSynthpop) {
     stop("The synthpop package is required to generate synthetic data.")
   }
 
@@ -234,83 +295,111 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     )
   }
 
-  # --- 3) Generate synthetic data for each column via jittered resampling ---
+  # --- 3) Generate synthetic data via synthpop -------------------------------
   if (nrow(dat) == 0L) {
     syn <- dat[0, , drop = FALSE]
   } else {
-    set.seed(options$seed %||% 123)
+    seed <- options$seed %||% 123L
+    set.seed(seed)
+
     rowCountMode <- options$rowCountMode %||% "same"
     if (identical(rowCountMode, "same")) {
       n_target <- nrow(dat)
     } else {
       n_target <- options$n %||% options$nRows %||% nrow(dat)
       n_target <- suppressWarnings(as.integer(n_target))
-      if (is.na(n_target) || n_target <= 0)
+      if (is.na(n_target) || n_target <= 0L)
         n_target <- nrow(dat)
     }
 
+    # -- Identify column roles ------------------------------------------------
     numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
+
     minDiscreteLevels <- options$minDiscreteLevels %||% 5L
     minDiscreteLevels <- suppressWarnings(as.integer(minDiscreteLevels))
     if (is.na(minDiscreteLevels) || minDiscreteLevels < 1L) {
       minDiscreteLevels <- 5L
     }
+
+    # FIX: was `dat[numericCols, drop=FALSE]` (row subsetting) — must be
+    #      `dat[, numericCols, drop=FALSE]` to subset columns.
+    numericSubset <- dat[, numericCols, drop = FALSE]
     discreteNumericCols <- names(Filter(function(x) {
       values <- x[!is.na(x)]
       length(unique(values)) <= minDiscreteLevels
-    }, dat[numericCols, drop = FALSE]))
-    numericCols <- setdiff(numericCols, discreteNumericCols)
-    categoricalCols <- setdiff(names(dat), numericCols)
-    n_simulations <- options$nSimulations %||% options$m %||% 5
+    }, numericSubset))
+
+    numericCols    <- setdiff(numericCols, discreteNumericCols)
+    categoricalCols <- setdiff(names(dat), numericCols)  # includes discreteNumericCols
+
+    n_simulations <- options$nSimulations %||% options$m %||% 5L
     n_simulations <- suppressWarnings(as.integer(n_simulations))
-    if (is.na(n_simulations) || n_simulations <= 0) {
+    if (is.na(n_simulations) || n_simulations <= 0L) {
       n_simulations <- 1L
     }
-    seed <- options$seed %||% 123
 
-    syn <- NULL
-    useSynthpop <- hasSynthpop && !forceSynthpopFallback
-    if (useSynthpop) {
-      synthpop_call <- tryCatch({
-        synthpop::syn(
-          data = dat,
-          m = n_simulations,
-          k = n_target,
-          seed = seed,
-          print.flag = FALSE,
-          drop.not.used = FALSE,
-          drop.pred.only = FALSE
-        )
-      }, error = function(e) {
-        warning("synthpop::syn failed; falling back to row resampling: ", conditionMessage(e))
-        NULL
-      })
-      if (!is.null(synthpop_call)) {
-        syn <- aggregate_synthpop_replicates(synthpop_call, dat)
-      }
-    } else if (forceSynthpopFallback) {
-      warning("forced synthpop fallback")
+    method_input <- options$synthpopMethod %||% options$synthpopMethods %||% "cart"
+    if (!is.character(method_input)) {
+      method_input <- "cart"
     }
-    if (is.null(syn)) {
-      syn <- resample_categorical_groups(dat, categoricalCols, n_target, rowCountMode)
+    method <- rep(method_input, length.out = ncol(dat))
+
+    # FIX: coerce character columns → factors before calling synthpop so that
+    #      the package fits an appropriate categorical model (polyreg / cart)
+    #      rather than treating strings as continuous via pmm.
+    dat_for_syn <- prepare_for_synthpop(dat)
+
+    synthpop_args <- list(
+      data          = dat_for_syn,
+      m             = n_simulations,
+      k             = n_target,
+      seed          = seed,
+      print.flag    = FALSE,
+      drop.not.used = FALSE,
+      drop.pred.only = FALSE,
+      method        = method
+    )
+
+    min_num_levels <- options$minnumlevels %||% options$minNumLevels
+    min_num_levels <- suppressWarnings(as.integer(min_num_levels))
+    if (length(min_num_levels) == 1L && !is.na(min_num_levels) && min_num_levels > 0L) {
+      synthpop_args$minnumlevels <- min_num_levels
     }
+
+    max_fac_levels <- options$maxfaclevels %||% options$maxFacLevels
+    max_fac_levels <- suppressWarnings(as.integer(max_fac_levels))
+    if (length(max_fac_levels) == 1L && !is.na(max_fac_levels) && max_fac_levels >= 0L) {
+      synthpop_args$maxfaclevels <- max_fac_levels
+    }
+
+    synthpop_call <- do.call(synthpop::syn, synthpop_args)
+
+    # Pass original `dat` (not dat_for_syn) as reference so type metadata
+    # (integer, ordered factor, logical) round-trips correctly.
+    # cat_cols / num_cols allow calibrate_conditional_moments to correct
+    # within-category means and SDs on the chosen replicate.
+    syn <- aggregate_synthpop_replicates(
+      synthpop_call, dat,
+      cat_cols = categoricalCols,
+      num_cols = numericCols,
+      seed     = seed
+    )
+
     if (ncol(syn) > 0L) {
       names(syn) <- selectedCols
     }
+
+    # -- Snap discrete-numeric columns back to observed values ----------------
     if (length(discreteNumericCols) > 0L) {
       for (col in discreteNumericCols) {
-        if (!(col %in% names(syn))) {
-          next
-        }
+        if (!(col %in% names(syn))) next
         allowed <- sort(unique(dat[[col]][!is.na(dat[[col]])]))
         if (length(allowed) == 0L) {
           syn[[col]] <- NA_real_
           next
         }
         mapped <- vapply(syn[[col]], function(value) {
-          if (is.na(value)) {
-            return(NA_real_)
-          }
+          if (is.na(value)) return(NA_real_)
           allowed[which.min(abs(value - allowed))]
         }, numeric(1))
         if (is.integer(dat[[col]])) {
@@ -319,17 +408,22 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
         syn[[col]] <- mapped
       }
     }
+
+    # -- Optional jitter on continuous numeric columns ------------------------
     jitterFraction <- options$jitterFraction %||% 0
     jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
     if (is.na(jitterFraction) || jitterFraction < 0)
       jitterFraction <- 0
     if (jitterFraction > 0 && length(numericCols) > 0) {
-      colSd <- vapply(dat[, numericCols, drop = FALSE], function(x) stats::sd(x, na.rm = TRUE), numeric(1))
+      colSd <- vapply(
+        dat[, numericCols, drop = FALSE],
+        function(x) stats::sd(x, na.rm = TRUE),
+        numeric(1)
+      )
       colSd[is.na(colSd)] <- 0
       for (col in numericCols) {
         sd_val <- colSd[col]
-        if (is.na(sd_val) || sd_val <= 0)
-          next
+        if (is.na(sd_val) || sd_val <= 0) next
         noise <- stats::rnorm(n = n_target, mean = 0, sd = jitterFraction * sd_val)
         syn[[col]] <- syn[[col]] + noise
       }
@@ -338,7 +432,6 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
 
   syn
 }
-
 ```
 
 ## Test Dataset
@@ -365,7 +458,7 @@ summary(mix_x)
 ```{r run-simulation}
 options_cat_x <- list(
   variables = c("body_mass_g", "sex"),
-  seed = 2026,
+  seed = 5678,
   rowCountMode = "same",
   n = nrow(penguins),
   jitterFraction = 0
@@ -373,7 +466,7 @@ options_cat_x <- list(
 
 options_cont_x <- list(
   variables = c("body_mass_g", "bill_length_mm", "bill_depth_mm"),
-  seed = 2026,
+  seed = 5678,
   rowCountMode = "same",
   n = nrow(penguins),
   jitterFraction = 0.1
@@ -381,7 +474,7 @@ options_cont_x <- list(
 
 options_mix_x <- list(
   variables = c("body_mass_g", "bill_length_mm", "bill_depth_mm", "species"),
-  seed = 2026,
+  seed = 5678,
   rowCountMode = "same",
   n = nrow(penguins),
   jitterFraction = 0.08
