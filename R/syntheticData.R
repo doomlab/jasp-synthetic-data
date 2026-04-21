@@ -87,7 +87,7 @@ calibrate_conditional_moments <- function(result, reference, cat_cols, num_cols)
     if (length(cat_cols) == 1L) {
       as.character(df[[cat_cols]])
     } else {
-      apply(df[, cat_cols, drop = FALSE], 1, paste, collapse = "\x00")
+      apply(df[, cat_cols, drop = FALSE], 1, paste, collapse = " ")
     }
   }
 
