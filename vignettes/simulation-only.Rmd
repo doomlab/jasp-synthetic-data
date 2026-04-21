@@ -1,3 +1,27 @@
+---
+title: "Simulation-only checks for synthetic data"
+output: html_document
+vignette: >
+  %\VignetteIndexEntry{Simulation-only checks for the synthetic data analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+This vignette exercises only the simulation portion of the synthetic-data workflow. We avoid the JASP UI glue in this document and focus entirely on the row resampling and optional jittering that happens once JASP calls `syntheticData()`.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+
+library(dplyr)
+library(palmerpenguins)
+```
+
+## Synthetic Data Function
+
+```{r}
 #' Synthetic data from categorical variables
 #'
 #' This analysis inspects the selected variables of the active JASP dataset,
@@ -406,91 +430,106 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     }
   }
 
-  # --- 4) Return results / preview ------------------------------------------
-  if (requireNamespace("jaspBase", quietly = TRUE)) {
-    preview <- jaspBase::createJaspTable(title = "Variable Types")
-    preview$addColumnInfo(name = "variable", title = "Variable", type = "string")
-    preview$addColumnInfo(name = "type",     title = "Type",     type = "string")
-    preview$setData(typeInfo)
-    jaspResults[["variableTypes"]]   <- preview
-    jaspResults[["syntheticTypes"]]  <- typeInfo
-
-    synPreview <- jaspBase::createJaspTable(title = "Synthetic Data Preview (first 10 rows)")
-    if (ncol(syn) == 0L) {
-      synPreview$addColumnInfo(name = "info", title = "Info", type = "string")
-      synPreview$setData(data.frame(info = "No columns selected."))
-    } else {
-      for (nm in names(syn)) {
-        synPreview$addColumnInfo(name = nm, title = nm, type = "string")
-      }
-      headRows <- utils::head(syn, 10)
-      headRows[] <- lapply(headRows, function(x) if (is.factor(x)) as.character(x) else x)
-      synPreview$setData(headRows)
-    }
-    jaspResults[["syntheticPreview"]] <- synPreview
-
-    createSynDataset <- if (exists("createJaspDataset",
-                                   envir    = asNamespace("jaspBase"),
-                                   inherits = FALSE)) {
-      jaspBase:::createJaspDataset
-    } else {
-      NULL
-    }
-    if (!is.null(createSynDataset)) {
-      synDataset <- createSynDataset(title = "Synthetic Dataset", data = syn)
-      jaspResults[["syntheticData"]] <- synDataset
-    }
-    jaspResults[["synthetic"]] <- syn
-
-    sanitizeExportPath <- function(path) {
-      clean <- path
-      clean <- sub("^file://localhost", "", clean)
-      if (startsWith(clean, "file://")) {
-        clean <- substring(clean, nchar("file://") + 1L)
-      } else if (startsWith(clean, "file:/")) {
-        clean <- substring(clean, nchar("file:/") + 1L)
-      }
-      if (.Platform$OS.type == "windows" && grepl("^/[A-Za-z]:", clean))
-        clean <- substring(clean, 2L)
-      clean <- utils::URLdecode(clean)
-      normalizePath(clean, winslash = "/", mustWork = FALSE)
-    }
-
-    exportPath <- trimws(options$fileFull %||% state$fileFull %||% "")
-    if (nzchar(exportPath)) {
-      exportPath <- sanitizeExportPath(exportPath)
-      state$fileFull    <- exportPath
-      state$lastSavePath <- exportPath
-      exportError <- NULL
-      tryCatch({
-        exportDir <- dirname(exportPath)
-        if (nzchar(exportDir) && !dir.exists(exportDir))
-          dir.create(exportDir, recursive = TRUE, showWarnings = FALSE)
-        exportSyn <- syn
-        if (ncol(exportSyn) > 0L) {
-          decodedNames <- tryCatch(
-            jaspBase::decodeColNames(names(exportSyn)),
-            error = function(e) names(exportSyn)
-          )
-          names(exportSyn) <- decodedNames
-        }
-        utils::write.csv(exportSyn, file = exportPath, row.names = FALSE)
-      }, error = function(e) {
-        exportError <<- conditionMessage(e)
-      })
-      if (!is.null(exportError)) {
-        exportBlock <- jaspBase::createJaspHtml(
-          title = "Export error",
-          text  = paste("Failed to save synthetic dataset:", exportError)
-        )
-        jaspResults[["syntheticExportError"]] <- exportBlock
-      }
-    } else if (!is.null(state$fileFull) && nzchar(state$fileFull)) {
-      state$lastSavePath <- state$fileFull
-    }
-
-    return(invisible())
-  }
-
   syn
 }
+```
+
+## Test Dataset
+
+```{r}
+data("penguins")
+```
+
+## Test Results
+
+```{r}
+cat_x <- lm(body_mass_g ~ sex, data = penguins)
+summary(cat_x)
+
+cont_x <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm, data = penguins)
+summary(cont_x)
+
+mix_x <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm + species, data = penguins)
+summary(mix_x)
+```
+
+## Create Data
+
+```{r run-simulation}
+options_cat_x <- list(
+  variables = c("body_mass_g", "sex"),
+  seed = 5678,
+  rowCountMode = "same",
+  n = nrow(penguins),
+  jitterFraction = 0
+)
+
+options_cont_x <- list(
+  variables = c("body_mass_g", "bill_length_mm", "bill_depth_mm"),
+  seed = 5678,
+  rowCountMode = "same",
+  n = nrow(penguins),
+  jitterFraction = 0.1
+)
+
+options_mix_x <- list(
+  variables = c("body_mass_g", "bill_length_mm", "bill_depth_mm", "species"),
+  seed = 5678,
+  rowCountMode = "same",
+  n = nrow(penguins),
+  jitterFraction = 0.08
+)
+
+simulated_cat_x <- syntheticData(
+  jaspResults = NULL,
+  dataset = penguins,
+  options = options_cat_x,
+  state = new.env(parent = emptyenv())
+)
+
+simulated_cont_x <- syntheticData(
+  jaspResults = NULL,
+  dataset = penguins,
+  options = options_cont_x,
+  state = new.env(parent = emptyenv())
+)
+
+simulated_mix_x <- syntheticData(
+  jaspResults = NULL,
+  dataset = penguins,
+  options = options_mix_x,
+  state = new.env(parent = emptyenv())
+)
+```
+
+## Test Simulated Data
+
+```{r}
+penguins %>% 
+  select(sex, body_mass_g) %>% 
+  na.omit() %>% 
+  pull(sex) %>% 
+  table()
+table(penguins$sex)
+table(simulated_cat_x$sex)
+
+cat_x_sim <- lm(body_mass_g ~ sex, data = simulated_cat_x)
+summary(cat_x)
+summary(cat_x_sim)
+
+cont_x_sim <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm, data = simulated_cont_x)
+summary(cont_x)
+summary(cont_x_sim)
+
+penguins %>% 
+  select(species, body_mass_g, bill_length_mm, bill_depth_mm) %>% 
+  na.omit() %>% 
+  pull(species) %>% 
+  table()
+table(penguins$species)
+table(simulated_mix_x$species)
+
+mix_x_sim <- lm(body_mass_g ~ bill_length_mm + bill_depth_mm + species, data = simulated_mix_x)
+summary(mix_x)
+summary(mix_x_sim)
+```

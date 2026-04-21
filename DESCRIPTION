@@ -14,7 +14,8 @@ Imports:
   jaspBase,
   jaspGraphs,
   faux,
-  base64enc
+  base64enc,
+  synthpop
 Suggests:
   testthat
 Remotes:
