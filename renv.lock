@@ -4,7 +4,7 @@
     "Repositories": [
       {
         "Name": "RSPM",
-        "URL": "https://packagemanager.posit.co/cran/latest"
+        "URL": "https://packagemanager.posit.co/cran/2026-04-26"
       },
       {
         "Name": "CRAN",
@@ -68,7 +68,7 @@
     },
     "Rcpp": {
       "Package": "Rcpp",
-      "Version": "1.1.1-1",
+      "Version": "1.1.1-1.1",
       "Source": "Repository",
       "Requirements": [
         "methods",
