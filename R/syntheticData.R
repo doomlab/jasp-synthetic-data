@@ -32,6 +32,42 @@ clamp_numeric <- function(values, reference) {
   values
 }
 
+#' Generate synthetic data for a single column without synthpop.
+#'
+#' - Categorical / factor / character: sample with observed category probabilities.
+#' - Integer: round-sample from Normal(mean, sd), clamped to observed [min, max].
+#' - Numeric: sample from Normal(mean, sd), clamped to observed [min, max].
+synthesize_single_column <- function(col_data, n, seed = 123L) {
+  set.seed(seed)
+  values <- col_data[!is.na(col_data)]
+
+  if (is.factor(col_data) || is.character(col_data) || is.logical(col_data)) {
+    tbl   <- table(values)
+    probs <- as.numeric(tbl) / sum(tbl)
+    out   <- sample(names(tbl), size = n, replace = TRUE, prob = probs)
+    if (is.factor(col_data)) {
+      out <- factor(out, levels = levels(col_data), ordered = is.ordered(col_data))
+    } else if (is.logical(col_data)) {
+      out <- as.logical(out)
+    }
+    return(out)
+  }
+
+  mu  <- mean(values, na.rm = TRUE)
+  sdev <- stats::sd(values, na.rm = TRUE)
+  lo  <- min(values, na.rm = TRUE)
+  hi  <- max(values, na.rm = TRUE)
+
+  if (is.na(sdev) || sdev == 0) {
+    out <- rep(mu, n)
+  } else {
+    out <- stats::rnorm(n, mean = mu, sd = sdev)
+  }
+  out <- pmin(pmax(out, lo), hi)
+
+  if (is.integer(col_data)) as.integer(round(out)) else out
+}
+
 #' Prepare a data.frame for synthpop
 #'
 #' Coerces character columns to factors so synthpop treats them as proper
@@ -231,6 +267,16 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
   requestedCols <- trimws(requestedCols)
   requestedCols <- requestedCols[nzchar(requestedCols)]
 
+  if (length(requestedCols) == 0L) {
+    if (requireNamespace("jaspBase", quietly = TRUE)) {
+      placeholder <- jaspBase::createJaspTable(title = "Variable Types")
+      placeholder$addColumnInfo(name = "info", title = "Info", type = "string")
+      placeholder$setData(data.frame(info = "No variables selected. Please select at least one variable."))
+      jaspResults[["variableTypes"]] <- placeholder
+    }
+    return(invisible())
+  }
+
   # --- 1) Get data -----------------------------------------------------------
   if (missing(dataset) || is.null(dataset)) {
     if (requireNamespace("jaspBase", quietly = TRUE)) {
@@ -271,22 +317,32 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
     )
   }
 
-  # --- 3) Generate synthetic data via synthpop -------------------------------
-  if (nrow(dat) == 0L) {
+  # --- 3) Generate synthetic data --------------------------------------------
+  seed     <- options$seed %||% 123L
+  rowCountMode <- options$rowCountMode %||% "same"
+  if (identical(rowCountMode, "same")) {
+    n_target <- nrow(dat)
+  } else {
+    n_target <- options$n %||% options$nRows %||% nrow(dat)
+    n_target <- suppressWarnings(as.integer(n_target))
+    if (is.na(n_target) || n_target <= 0L)
+      n_target <- nrow(dat)
+  }
+
+  if (ncol(dat) == 1L) {
+    # Single-variable path: no synthpop needed
+    if (nrow(dat) == 0L) {
+      syn <- dat[0, , drop = FALSE]
+    } else {
+      col_name <- names(dat)[[1L]]
+      syn_col  <- synthesize_single_column(dat[[1L]], n = n_target, seed = seed)
+      syn      <- data.frame(syn_col, stringsAsFactors = FALSE)
+      names(syn) <- col_name
+    }
+  } else if (nrow(dat) == 0L) {
     syn <- dat[0, , drop = FALSE]
   } else {
-    seed <- options$seed %||% 123L
     set.seed(seed)
-
-    rowCountMode <- options$rowCountMode %||% "same"
-    if (identical(rowCountMode, "same")) {
-      n_target <- nrow(dat)
-    } else {
-      n_target <- options$n %||% options$nRows %||% nrow(dat)
-      n_target <- suppressWarnings(as.integer(n_target))
-      if (is.na(n_target) || n_target <= 0L)
-        n_target <- nrow(dat)
-    }
 
     # -- Identify column roles ------------------------------------------------
     numericCols <- names(dat)[vapply(dat, is.numeric, FUN.VALUE = logical(1))]
