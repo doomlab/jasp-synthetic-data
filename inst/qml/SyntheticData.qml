@@ -56,6 +56,17 @@ Form {
                 fieldWidth: 100 * jaspTheme.uiScale
             }
 
+            DropDown {
+                name: "synthpopMethod"     // -> options$synthpopMethod
+                label: qsTr("Synthesis method")
+                values: [
+                    { label: qsTr("CART"),                   value: "cart" },
+                    { label: qsTr("Conditional trees"),      value: "ctree" },
+                    { label: qsTr("Parametric"),             value: "parametric" }
+                ]
+                info: qsTr("Model used to generate each variable from the variables before it. CART (classification and regression trees) is the synthpop default and captures nonlinear relationships. Parametric uses regression models chosen by variable type.")
+            }
+
             DoubleField {
                 name: "jitterFraction"     // -> options$jitterFraction
                 label: qsTr("Jitter fraction")
@@ -64,6 +75,34 @@ Form {
                 max: 1
                 info: qsTr("Controls the size of jitter applied to numeric columns after resampling rows. Zero means no jitter.")
                 fieldWidth: 100 * jaspTheme.uiScale
+            }
+        }
+    }
+
+    Section {
+        title: qsTr("Utility")
+        ColumnLayout {
+            spacing: 8
+
+            CheckBox {
+                name: "utilityTable"       // -> options$utilityTable
+                label: qsTr("Utility by variable (pMSE)")
+                checked: true
+                info: qsTr("Table of the propensity score mean squared error (pMSE) and standardized pMSE (S_pMSE) for each variable. S_pMSE values near 1 indicate good utility.")
+            }
+
+            CheckBox {
+                name: "comparisonPlots"    // -> options$comparisonPlots
+                label: qsTr("Distribution comparison plots")
+                checked: true
+                info: qsTr("Side-by-side distributions of the original and synthetic data for each variable.")
+            }
+
+            CheckBox {
+                name: "overallUtility"     // -> options$overallUtility
+                label: qsTr("Overall utility")
+                checked: false
+                info: qsTr("pMSE and S_pMSE from a model using all variables at once, which checks whether relationships between variables are preserved. Requires at least two variables and can be slow for large datasets.")
             }
         }
     }

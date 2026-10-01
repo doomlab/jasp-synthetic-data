@@ -71,7 +71,7 @@ test_that("syntheticData returns early with no variables selected", {
 test_that("syntheticData handles single numeric variable without synthpop", {
   results <- make_results_env()
   ds      <- data.frame(num = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  ret     <- syn_main(results, ds, options = list(variables = "num", seed = 42L))
+  ret     <- syn_main(results, ds, options = list(variables = "num", seed = 42L, comparisonPlots = FALSE))
   syn     <- get_synthetic(ret, results)
   expect_false(is.null(syn))
   expect_equal(names(syn), "num")
@@ -81,14 +81,14 @@ test_that("syntheticData handles single numeric variable without synthpop", {
 test_that("syntheticData handles single categorical variable without synthpop", {
   results <- make_results_env()
   ds      <- data.frame(cat = factor(c("x", "y", "x", "y", "x")))
-  ret     <- syn_main(results, ds, options = list(variables = "cat", seed = 42L))
+  ret     <- syn_main(results, ds, options = list(variables = "cat", seed = 42L, comparisonPlots = FALSE))
   syn     <- get_synthetic(ret, results)
   expect_false(is.null(syn))
   expect_equal(names(syn), "cat")
   expect_true(all(syn$cat %in% c("x", "y")))
 })
 
-test_that("aggregate_synthpop_replicates averages numerics and honors factors", {
+test_that("aggregate_synthpop_replicates keeps one whole replicate and honors types", {
   replicates <- list(
     data.frame(
       num = c(1L, 2L),
@@ -108,10 +108,138 @@ test_that("aggregate_synthpop_replicates averages numerics and honors factors", 
   )
   synthetic_object <- structure(list(syn = replicates, m = length(replicates)), class = "synds")
   aggregate_fn <- getFromNamespace("aggregate_synthpop_replicates", "jaspSyntheticData")
-  averaged <- aggregate_fn(synthetic_object, reference)
 
-  expect_equal(averaged$num, c(2L, 3L))
-  expect_true(is.factor(averaged$cat))
-  expect_equal(as.character(averaged$cat), c("a", "a"))
-  expect_equal(levels(averaged$cat), c("a", "b"))
+  for (seed in 1:10) {
+    result <- aggregate_fn(synthetic_object, reference, seed = seed)
+
+    # Rows are never mixed across replicates: the result is one replicate intact
+    matches <- vapply(replicates, function(r) {
+      identical(result$num, r$num) &&
+        identical(as.character(result$cat), as.character(r$cat))
+    }, logical(1))
+    expect_true(any(matches))
+
+    expect_true(is.integer(result$num))
+    expect_true(is.factor(result$cat))
+    expect_equal(levels(result$cat), c("a", "b"))
+  }
+
+  # Same seed, same replicate
+  expect_identical(
+    aggregate_fn(synthetic_object, reference, seed = 7L),
+    aggregate_fn(synthetic_object, reference, seed = 7L)
+  )
+})
+
+test_that("calibrate_conditional_moments matches within-category means and SDs", {
+  calibrate_fn <- getFromNamespace("calibrate_conditional_moments", "jaspSyntheticData")
+  set.seed(1)
+  reference <- data.frame(
+    grp = factor(rep(c("a", "b"), each = 50)),
+    x   = c(stats::rnorm(50, mean = 10, sd = 2), stats::rnorm(50, mean = 20, sd = 4))
+  )
+  synthetic <- data.frame(
+    grp = factor(rep(c("a", "b"), each = 40)),
+    x   = c(stats::rnorm(40, mean = 12, sd = 1), stats::rnorm(40, mean = 17, sd = 6))
+  )
+
+  result <- calibrate_fn(synthetic, reference, cat_cols = "grp", num_cols = "x")
+
+  for (g in c("a", "b")) {
+    ref_x <- reference$x[reference$grp == g]
+    res_x <- result$x[result$grp == g]
+    expect_equal(mean(res_x), mean(ref_x), tolerance = 0.02)
+    expect_equal(stats::sd(res_x), stats::sd(ref_x), tolerance = 0.05)
+  }
+
+  # Group labels are untouched, and values stay inside the observed range
+  expect_identical(result$grp, synthetic$grp)
+  expect_true(all(result$x >= min(reference$x) & result$x <= max(reference$x)))
+})
+
+utility_dataset <- function(n = 200L) {
+  set.seed(1)
+  group <- factor(sample(c("a", "b", "c"), n, replace = TRUE))
+  x     <- stats::rnorm(n)
+  data.frame(
+    x     = x,
+    y     = 2 * x + as.numeric(group) + stats::rnorm(n),
+    group = group
+  )
+}
+
+# Plots can only be rendered inside JASP's graphics backend, so the full
+# analysis output is tested through jaspTools; direct calls turn plots off.
+run_utility_analysis <- function(ds, extra = list()) {
+  testthat::skip_if_not_installed("jaspTools")
+  jaspTools::setPkgOption("module.dirs", testthat::test_path("..", ".."))
+  # Options are built by hand: jaspTools::analysisOptions() misparses this
+  # module's QML (inline `// -> options$...` comments mangle the names).
+  opts <- c(list(variables = names(ds), seed = 42L, rowCountMode = "same"), extra)
+  attr(opts, "analysisName") <- "syntheticData"
+  jaspTools::runAnalysis("syntheticData", ds, opts, view = FALSE, quiet = TRUE)
+}
+
+test_that("syntheticData reports per-variable utility and comparison plots", {
+  ds  <- utility_dataset()
+  res <- run_utility_analysis(ds)
+  expect_equal(res$status, "complete")
+
+  utility <- res$results$utilityTable$data
+  expect_equal(vapply(utility, `[[`, character(1), "variable"), names(ds))
+  expect_true(all(vapply(utility, `[[`, numeric(1), "pMSE") >= 0))
+  expect_equal(res$results$comparisonPlots$status, "complete")
+  expect_null(res$results$overallUtility)
+})
+
+test_that("syntheticData computes overall utility when requested", {
+  ds  <- utility_dataset()
+  res <- run_utility_analysis(ds, list(overallUtility = TRUE))
+  overall <- res$results$overallUtility$data
+  expect_length(overall, 1L)
+  expect_true(overall[[1]]$pMSE >= 0)
+})
+
+test_that("utility options can be turned off", {
+  results <- make_results_env()
+  ds      <- utility_dataset()
+  syn_main(results, ds, options = list(
+    variables = names(ds), seed = 42L,
+    utilityTable = FALSE, comparisonPlots = FALSE
+  ))
+  expect_false(exists("utilityTable", envir = results))
+  expect_false(exists("comparisonPlots", envir = results))
+})
+
+test_that("utility table is computed on the final synthetic data", {
+  results <- make_results_env()
+  ds      <- utility_dataset()
+  syn_main(results, ds, options = list(
+    variables = names(ds), seed = 42L, comparisonPlots = FALSE
+  ))
+  expect_true(exists("utilityTable", envir = results))
+
+  compare_fn <- getFromNamespace("compare_synthetic", "jaspSyntheticData")
+  prep_fn    <- getFromNamespace("prepare_utility_data", "jaspSyntheticData")
+  prepared   <- prep_fn(ds, results[["synthetic"]])
+  cmp        <- compare_fn(prepared$original, prepared$synthetic)
+  expect_equal(rownames(cmp$tab.utility), names(ds))
+  expect_s3_class(cmp$plots, "ggplot")
+})
+
+test_that("compare_synthetic handles a single variable", {
+  compare_fn <- getFromNamespace("compare_synthetic", "jaspSyntheticData")
+  ds  <- utility_dataset()
+  cmp <- compare_fn(ds[, "x", drop = FALSE], ds[sample(nrow(ds)), "x", drop = FALSE])
+  expect_equal(rownames(cmp$tab.utility), "x")
+})
+
+test_that("parametric synthesis method runs", {
+  results <- make_results_env()
+  ds      <- utility_dataset()
+  syn_main(results, ds, options = list(
+    variables = names(ds), seed = 42L, synthpopMethod = "parametric",
+    comparisonPlots = FALSE
+  ))
+  expect_equal(nrow(results[["synthetic"]]), nrow(ds))
 })
