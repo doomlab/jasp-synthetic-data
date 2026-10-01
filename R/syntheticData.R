@@ -77,6 +77,10 @@ prepare_for_synthpop <- function(dat) {
   for (col in names(dat)) {
     if (is.character(dat[[col]])) {
       dat[[col]] <- factor(dat[[col]])
+    } else if (is.numeric(dat[[col]])) {
+      # NaN (e.g., a row mean over all-missing items) breaks synthpop's
+      # collinearity check, while NA is handled as missing.
+      dat[[col]][is.nan(dat[[col]])] <- NA
     }
   }
   dat

@@ -261,3 +261,19 @@ test_that("rating-scale columns stay whole numbers within the observed range", {
   expect_true(all(syn$rating >= 1 & syn$rating <= 9))
   expect_true(all(syn$score >= min(ds$score) & syn$score <= max(ds$score)))
 })
+
+test_that("NaN values in numeric columns do not break synthesis", {
+  set.seed(4)
+  n  <- 300L
+  ds <- data.frame(
+    score = stats::rnorm(n),
+    other = stats::rnorm(n),
+    group = factor(sample(c("a", "b"), n, replace = TRUE))
+  )
+  ds$score[1:30] <- NaN
+  results <- make_results_env()
+  expect_no_error(syn_main(results, ds, options = list(
+    variables = names(ds), seed = 42L, comparisonPlots = FALSE
+  )))
+  expect_equal(nrow(results[["synthetic"]]), n)
+})
