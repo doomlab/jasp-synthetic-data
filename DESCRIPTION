@@ -1,19 +1,25 @@
 Package: jaspSyntheticData
 Type: Package
-Title: A module for JASP
+Title: Generate Synthetic Data in JASP
 Version: 0.2.0
 Date: 2026-10-01
-Author: JASP Team
-Website: jasp-stats.org
-Maintainer: JASP Team <info@jasp-stats.org>
-Description: Example module showing basic functionality. Use it for inspiration when creating your own module.
+Authors@R:
+    person("Erin M.", "Buchanan", email = "buchananlab@gmail.com",
+           role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0002-9689-4189"))
+Description: A JASP module that generates synthetic versions of a dataset with
+    the 'synthpop' package, so researchers can share data that cannot be released
+    in its original form. It reports per-variable and overall utility
+    (pMSE and standardized pMSE), plots original and synthetic distributions,
+    and exports the synthetic dataset as a CSV file.
+URL: https://github.com/doomlab/jasp-synthetic-data
+BugReports: https://github.com/doomlab/jasp-synthetic-data/issues
 License: GPL (>= 2)
 Encoding: UTF-8
 Language: en
 Imports:
   jaspBase,
   jaspGraphs,
-  faux,
   base64enc,
   synthpop
 Suggests:
