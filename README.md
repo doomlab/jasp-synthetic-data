@@ -1,5 +1,7 @@
 # jaspSyntheticData
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23075931.svg)](https://doi.org/10.5281/zenodo.23075931)
+
 jaspSyntheticData is a JASP module for generating synthetic versions of a dataset. It gives researchers a point-and-click route to sharing data that cannot be released in its original form, such as data restricted by participant confidentiality or consent. Synthesis is done with the [synthpop](https://www.synthpop.org.uk/) R package, and the module reports utility measures so users can judge how closely the synthetic data match the original before sharing them.
 
 ## Highlights
@@ -67,7 +69,11 @@ Plots can only be rendered inside JASP's graphics backend, so tests that check p
 
 ## Citation
 
-If you use this module, please cite it using the metadata in [`CITATION.cff`](CITATION.cff), or use the "Cite this repository" button on GitHub. Please also cite synthpop:
+If you use this module, please cite it using the metadata in [`CITATION.cff`](CITATION.cff), or use the "Cite this repository" button on GitHub:
+
+Buchanan, E. M. (2026). *jaspSyntheticData: A JASP module for generating synthetic data* [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23075931
+
+Please also cite synthpop:
 
 Nowok, B., Raab, G. M., & Dibben, C. (2016). synthpop: Bespoke creation of synthetic data in R. *Journal of Statistical Software, 74*(11), 1–26. https://doi.org/10.18637/jss.v074.i11
 
