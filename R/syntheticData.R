@@ -255,13 +255,28 @@ aggregate_synthpop_replicates <- function(syn_object, reference,
   # --- Step 3: calibrate within-category conditional moments ----------------
   result <- calibrate_conditional_moments(result, reference, cat_cols, num_cols)
 
+  # --- Step 4: restore whole numbers ------------------------------------------
+  # Calibration rescales values, which turns whole-number columns (ages,
+  # rating scales) into decimals. Round any column whose observed values are
+  # all whole numbers; the clamp in calibration keeps the bounds whole, so
+  # rounding cannot leave the observed range.
+  for (col in num_cols) {
+    observed <- reference[[col]][!is.na(reference[[col]])]
+    if (length(observed) > 0L && all(observed == round(observed))) {
+      result[[col]] <- round(result[[col]])
+      if (is.integer(reference[[col]])) {
+        result[[col]] <- as.integer(result[[col]])
+      }
+    }
+  }
+
   result
 }
 
 #' Prepare the original and synthetic data for synthpop's utility functions.
 #'
 #' Utility is evaluated on the final synthetic dataset (after replicate
-#' selection, calibration, and jitter), so the measures describe the data the
+#' selection and calibration), so the measures describe the data the
 #' user actually saves. Both datasets are coerced to plain data.frames with
 #' character columns as factors, and JASP-encoded column names are decoded so
 #' plot and table labels show the names the user sees.
@@ -487,26 +502,6 @@ syntheticData <- function(jaspResults, dataset, options, state, ...) {
           mapped <- as.integer(mapped)
         }
         syn[[col]] <- mapped
-      }
-    }
-
-    # -- Optional jitter on continuous numeric columns ------------------------
-    jitterFraction <- options$jitterFraction %||% 0
-    jitterFraction <- suppressWarnings(as.numeric(jitterFraction))
-    if (is.na(jitterFraction) || jitterFraction < 0)
-      jitterFraction <- 0
-    if (jitterFraction > 0 && length(numericCols) > 0) {
-      colSd <- vapply(
-        dat[, numericCols, drop = FALSE],
-        function(x) stats::sd(x, na.rm = TRUE),
-        numeric(1)
-      )
-      colSd[is.na(colSd)] <- 0
-      for (col in numericCols) {
-        sd_val <- colSd[col]
-        if (is.na(sd_val) || sd_val <= 0) next
-        noise <- stats::rnorm(n = n_target, mean = 0, sd = jitterFraction * sd_val)
-        syn[[col]] <- syn[[col]] + noise
       }
     }
   }

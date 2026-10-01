@@ -66,16 +66,6 @@ Form {
                 ]
                 info: qsTr("Model used to generate each variable from the variables before it. CART (classification and regression trees) is the synthpop default and captures nonlinear relationships. Parametric uses regression models chosen by variable type.")
             }
-
-            DoubleField {
-                name: "jitterFraction"     // -> options$jitterFraction
-                label: qsTr("Jitter fraction")
-                defaultValue: 0.05
-                min: 0
-                max: 1
-                info: qsTr("Controls the size of jitter applied to numeric columns after resampling rows. Zero means no jitter.")
-                fieldWidth: 100 * jaspTheme.uiScale
-            }
         }
     }
 

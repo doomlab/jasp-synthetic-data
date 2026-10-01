@@ -19,8 +19,8 @@ Utility is computed on the final synthetic dataset, so the measures describe the
 1. Character columns are converted to factors, and numeric columns with few distinct values (5 or fewer) are treated as categorical.
 2. `synthpop::syn()` generates several synthetic datasets with the chosen method.
 3. One synthetic dataset is selected at random and kept whole, so every row's values come from the same synthesis draw.
-4. Within each combination of categorical values, numeric columns are rescaled so their means and standard deviations match the original data, and values are kept within the observed range.
-5. Discrete numeric columns are snapped back to observed values, and optional jitter is added to continuous columns.
+4. Within each combination of categorical values, numeric columns are rescaled so their means and standard deviations match the original data, and values are kept within the observed range. Columns that contain only whole numbers in the original data (such as ages or rating scales) are rounded back to whole numbers.
+5. Discrete numeric columns are snapped back to observed values.
 
 A single selected variable is generated without synthpop by sampling from its observed distribution.
 
@@ -32,7 +32,6 @@ A single selected variable is generated without synthpop by sampling from its ob
 | Row count | Keep the original number of rows or set a new total. |
 | Random seed | Set this for reproducible output. |
 | Synthesis method | CART, conditional trees, or parametric. |
-| Jitter fraction | Noise added to continuous columns, as a fraction of each column's SD (0 = none). |
 | Utility by variable | Per-variable pMSE and S_pMSE table (on by default). |
 | Distribution comparison plots | Original vs. synthetic distributions (on by default). |
 | Overall utility | All-variable pMSE and S_pMSE (off by default; can be slow on large datasets). |

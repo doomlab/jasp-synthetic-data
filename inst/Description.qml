@@ -6,7 +6,7 @@ Description
 	name		: "jaspSyntheticData"
 	title		: qsTr("Synthetic Data")
 	description	: qsTr("A module to create synthetic data from a dataset")
-	version		: "0.1"
+	version		: "0.2"
 	author		: "Erin M. Buchanan"
 	maintainer	: "Erin M. Buchanan <buchananlab@gmail.com>"
 	website		: "https://aggieerin.com"

@@ -243,3 +243,21 @@ test_that("parametric synthesis method runs", {
   ))
   expect_equal(nrow(results[["synthetic"]]), nrow(ds))
 })
+
+test_that("rating-scale columns stay whole numbers within the observed range", {
+  set.seed(3)
+  n  <- 300L
+  ds <- data.frame(
+    rating = sample(1:9, n, replace = TRUE),
+    score  = stats::rnorm(n),
+    group  = factor(sample(c("a", "b"), n, replace = TRUE))
+  )
+  results <- make_results_env()
+  syn_main(results, ds, options = list(
+    variables = names(ds), seed = 42L, comparisonPlots = FALSE
+  ))
+  syn <- results[["synthetic"]]
+  expect_true(all(syn$rating == round(syn$rating)))
+  expect_true(all(syn$rating >= 1 & syn$rating <= 9))
+  expect_true(all(syn$score >= min(ds$score) & syn$score <= max(ds$score)))
+})
