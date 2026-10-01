@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "jaspSyntheticData: A JASP module for generating synthetic data"
+abstract: >-
+  jaspSyntheticData is a JASP module that generates synthetic versions of a
+  dataset using the synthpop R package, giving researchers a point-and-click
+  route to sharing data that cannot be released in its original form. The
+  module synthesizes the selected variables with CART, conditional trees, or
+  parametric models; reports utility measures (pMSE and standardized pMSE) and
+  distribution comparison plots so users can judge how closely the synthetic
+  data match the original; and exports the synthetic dataset as a CSV file.
+authors:
+  - family-names: Buchanan
+    given-names: Erin M.
+    email: buchananlab@gmail.com
+    affiliation: Harrisburg University of Science and Technology
+    orcid: "https://orcid.org/0000-0002-9689-4189"
+version: 0.1.0
+license: GPL-2.0-or-later
+repository-code: "https://github.com/doomlab/jasp-synthetic-data"
+url: "https://github.com/doomlab/jasp-synthetic-data"
+keywords:
+  - JASP
+  - synthetic data
+  - synthpop
+  - data sharing
+  - open science
+  - privacy
+  - R

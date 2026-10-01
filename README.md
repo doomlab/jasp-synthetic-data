@@ -1,31 +1,76 @@
 # jaspSyntheticData
 
-jaspSyntheticData is a lightweight JASP module that produces synthetic datasets by resampling the originally selected variables. It keeps the categorical joint distribution intact by sampling entire rows with replacement and optionally adds jitter to numeric columns. The same synthetic data can be previewed inside JASP or exported straight to disk while decoding the encoded column names so that the resulting CSV uses the user-facing labels.
+jaspSyntheticData is a JASP module for generating synthetic versions of a dataset. It gives researchers a point-and-click route to sharing data that cannot be released in its original form, such as data restricted by participant confidentiality or consent. Synthesis is done with the [synthpop](https://www.synthpop.org.uk/) R package, and the module reports utility measures so users can judge how closely the synthetic data match the original before sharing them.
 
 ## Highlights
 
-- Automatically resamples the selected variables (adaptive to `rowCountMode`/`n` options) to mirror the empirical joint distribution.
-- Classifies variables as _continuous_ or _categorical_ and presents that metadata back as a JaspTable for easy inspection.
-- Supports optional jitter on numeric columns so generated data stays realistic while preventing exact copies.
-- Exported CSV files decode the internal column names so the saved file uses the labels displayed in the JASP interface.
+- **Synthesis with synthpop.** Each variable is generated from the variables before it, using CART (the synthpop default), conditional trees, or parametric models chosen by variable type.
+- **Utility by variable.** A table of the propensity score mean squared error (pMSE) and standardized pMSE (S_pMSE) for each variable. pMSE values near 0 and S_pMSE values near 1 indicate good utility.
+- **Distribution comparison plots.** One figure comparing the original and synthetic distributions of every selected variable.
+- **Overall utility (optional).** pMSE and S_pMSE from a model using all variables at once, which checks whether relationships between variables are preserved.
+- **Export.** Save the synthetic dataset as a CSV file with the variable names shown in JASP.
+
+Utility is computed on the final synthetic dataset, so the measures describe the file you save.
+
+## How the synthetic data are built
+
+1. Character columns are converted to factors, and numeric columns with few distinct values (5 or fewer) are treated as categorical.
+2. `synthpop::syn()` generates several synthetic datasets with the chosen method.
+3. One synthetic dataset is selected at random and kept whole, so every row's values come from the same synthesis draw.
+4. Within each combination of categorical values, numeric columns are rescaled so their means and standard deviations match the original data, and values are kept within the observed range.
+5. Discrete numeric columns are snapped back to observed values, and optional jitter is added to continuous columns.
+
+A single selected variable is generated without synthpop by sampling from its observed distribution.
+
+## Options
+
+| Option | Description |
+|---|---|
+| Variables | The columns to synthesize. The synthesis order follows the list from top to bottom. |
+| Row count | Keep the original number of rows or set a new total. |
+| Random seed | Set this for reproducible output. |
+| Synthesis method | CART, conditional trees, or parametric. |
+| Jitter fraction | Noise added to continuous columns, as a fraction of each column's SD (0 = none). |
+| Utility by variable | Per-variable pMSE and S_pMSE table (on by default). |
+| Distribution comparison plots | Original vs. synthetic distributions (on by default). |
+| Overall utility | All-variable pMSE and S_pMSE (off by default; can be slow on large datasets). |
+| Save as… | File path for the exported CSV. |
 
 ## Installation
 
+Install the module from source:
+
 ```bash
-R CMD INSTALL . --preclean --no-multiarch --with-keep.source jaspSyntheticData
+R CMD INSTALL . --preclean --no-multiarch --with-keep.source
 ```
+
+To load it in JASP during development, see [Adding your own modules to JASP](https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-adding-module.md).
 
 ## Usage
 
-1. Start JASP and register the module in development mode (see [jasp-adding-module.md](https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-adding-module.md)).
-2. Open a dataset, select the _Synthetic data_ analysis, and choose which columns you want to resample.
-3. Configure options such as _row count mode_, _seed_, and _jitter fraction_, and run the analysis.
-4. Preview the synthetic dataset inside JASP or press _Export_ to save the decoded CSV.
+1. Open a dataset in JASP and choose **Synthetic Data** from the module menu.
+2. Move the variables you want to synthesize into the **Variables** box.
+3. Set the seed, synthesis method, and any other options.
+4. Check the utility table and comparison plots to judge whether the synthetic data are close enough to the original for your purpose.
+5. Under **Save synthetic dataset**, pick a file path to export the CSV.
 
 ## Development
 
-Modify `R/syntheticData.R` to tweak resampling, jitter, or export logic. The `tests` directory contains headless scenarios that instantiate the analysis without JASP; use `devtools::test()` or `renv::restore()` if you need reproducible environments.
+The analysis lives in `R/syntheticData.R` and the interface in `inst/qml/SyntheticData.qml`. Tests are in `tests/testthat` and can be run with:
 
-## Reference
+```r
+pkgload::load_all(".")
+testthat::test_dir("tests/testthat", load_package = "none")
+```
 
-[Adding your own modules to JASP](https://github.com/jasp-stats/jasp-desktop/blob/development/Docs/development/jasp-adding-module.md)
+Plots can only be rendered inside JASP's graphics backend, so tests that check plot output run through `jaspTools::runAnalysis()` and are skipped if jaspTools is not installed.
+
+## Citation
+
+If you use this module, please cite it using the metadata in [`CITATION.cff`](CITATION.cff), or use the "Cite this repository" button on GitHub. Please also cite synthpop:
+
+Nowok, B., Raab, G. M., & Dibben, C. (2016). synthpop: Bespoke creation of synthetic data in R. *Journal of Statistical Software, 74*(11), 1–26. https://doi.org/10.18637/jss.v074.i11
+
+## License
+
+GPL (>= 2)
