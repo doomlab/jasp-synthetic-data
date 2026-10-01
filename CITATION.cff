@@ -25,6 +25,9 @@ identifiers:
   - type: doi
     value: 10.5281/zenodo.23075932
     description: "DOI for version 0.1.0"
+  - type: doi
+    value: 10.5281/zenodo.23078460
+    description: "DOI for version 0.2.0"
 license: GPL-2.0-or-later
 repository-code: "https://github.com/doomlab/jasp-synthetic-data"
 url: "https://github.com/doomlab/jasp-synthetic-data"
